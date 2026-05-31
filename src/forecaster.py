@@ -14,13 +14,31 @@ def prepare_data(df, date_col, sales_col):
 
 def train_and_forecast(df, weeks=12, date_col='Date', sales_col='Weekly_Sales'):
     data = prepare_data(df, date_col, sales_col)
-    
-    model = ExponentialSmoothing(
-        data['y'],
-        trend='add',
-        seasonal='add',
-        seasonal_periods=52
-    ).fit()
+
+    n = len(data)
+    if n >= 104:
+        seasonal_periods = 52
+    elif n >= 24:
+        seasonal_periods = 12
+    else:
+        seasonal_periods = None
+
+    try:
+        if seasonal_periods:
+            model = ExponentialSmoothing(
+                data['y'],
+                trend='add',
+                seasonal='add',
+                seasonal_periods=seasonal_periods
+            ).fit()
+        else :model = ExponentialSmoothing(
+                data['y'],
+                trend='add',
+                seasonal_periods=None
+            ).fit()
+    except :
+        from statsmodels.tsa.holtwinters import SimpleExpSmoothing
+        model = SimpleExpSmoothing(data['y']).fit()
     
     forecast_values = model.forecast(weeks)
     
