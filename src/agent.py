@@ -1,8 +1,10 @@
-import anthropic
-from dotenv import load_dotenv
+import anthropic 
+import streamlit as st
+import os 
+api_key = st.secrets.get("ANTHRPOPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+client = anthropic.Anthropic(api_key=api_key)
 
-load_dotenv()
-client = anthropic.Anthropic()
+
 
 def build_system_prompt(summary, store_df, holiday_df, corr_series, forecast_summary):
     
