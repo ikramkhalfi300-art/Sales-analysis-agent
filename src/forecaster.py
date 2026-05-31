@@ -1,34 +1,53 @@
-from prophet import Prophet
 import pandas as pd
+import numpy as np
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
-def prepare_prophet_data(df, date_col='Date', sales_col='Weekly_Sales'):
-    """يقبل أي اسم عمود"""
-    if df[date_col].dtype != 'datetime64[ns]':
-        df[date_col] = pd.to_datetime(df[date_col], dayfirst=True, errors='coerce')
-    
-    weekly_total = (
+def prepare_data(df, date_col, sales_col):
+    weekly = (
         df.groupby(date_col)[sales_col]
         .sum()
         .reset_index()
         .rename(columns={date_col: 'ds', sales_col: 'y'})
+        .sort_values('ds')
     )
-    return weekly_total
+    return weekly
 
 def train_and_forecast(df, weeks=12, date_col='Date', sales_col='Weekly_Sales'):
-    prophet_data = prepare_prophet_data(df, date_col, sales_col)
+    data = prepare_data(df, date_col, sales_col)
     
-    model = Prophet(
-        yearly_seasonality=True,
-        weekly_seasonality=False,
-        daily_seasonality=False,
-        changepoint_prior_scale=0.05,
+    model = ExponentialSmoothing(
+        data['y'],
+        trend='add',
+        seasonal='add',
+        seasonal_periods=52
+    ).fit()
+    
+    forecast_values = model.forecast(weeks)
+    
+    last_date = data['ds'].max()
+    future_dates = pd.date_range(
+        start=last_date + pd.Timedelta(weeks=1),
+        periods=weeks,
+        freq='W'
     )
     
-    model.fit(prophet_data)
-    future = model.make_future_dataframe(periods=weeks, freq='W')
-    forecast = model.predict(future)
+    forecast_df = pd.DataFrame({
+        'ds': future_dates,
+        'yhat': forecast_values.values,
+        'yhat_lower': forecast_values.values * 0.9,
+        'yhat_upper': forecast_values.values * 1.1
+    })
     
-    return forecast, prophet_data
+    prophet_data = data
+    full_forecast = pd.concat([
+        data.rename(columns={'y': 'yhat'}).assign(
+            yhat_lower=data['y'] * 0.9,
+            yhat_upper=data['y'] * 1.1
+        ),
+        forecast_df
+    ]).reset_index(drop=True)
+    
+    return full_forecast, prophet_data
 
 def get_forecast_summary(forecast, weeks=12):
     future = forecast.tail(weeks)
