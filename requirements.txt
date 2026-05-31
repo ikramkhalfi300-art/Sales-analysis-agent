@@ -1,0 +1,6 @@
+pandas
+matplotlib
+matplotlib.pyplot
+prophet
+anthropic
+python-dotenv
