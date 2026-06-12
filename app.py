@@ -8,11 +8,11 @@ load_dotenv()
 
 st.set_page_config(page_title="Sales Analysis Agent", page_icon="📊", layout="wide")
 
-# ─── اختيار اللغة (أول شيء يُحدد) ───────────────────────
+# ─── اختيار اللغة ────────────────────────────────────────
 lang_options = {"English": "en", "العربية": "ar", "Français": "fr"}
-lang_label = st.sidebar.selectbox("🌐 Language / اللغة / Langue", list(lang_options.keys()))
-lang = lang_options[lang_label]
-T = get_translations(lang)
+lang_label   = st.sidebar.selectbox("🌐 Language / اللغة / Langue", list(lang_options.keys()))
+lang         = lang_options[lang_label]
+T            = get_translations(lang)
 
 # ─── CSS + اتجاه الصفحة ──────────────────────────────────
 direction = "rtl" if lang == "ar" else "ltr"
@@ -20,26 +20,27 @@ st.markdown(f"""
 <style>
     .main-header {{
         font-size: 2.2rem; font-weight: 700; color: #1E40AF;
-        text-align: center; padding: 1rem 0;
-        direction: {direction};
+        text-align: center; padding: 1rem 0; direction: {direction};
     }}
     .sub-header {{
         font-size: 1rem; color: #6B7280;
-        text-align: center; margin-bottom: 2rem;
-        direction: {direction};
+        text-align: center; margin-bottom: 2rem; direction: {direction};
+    }}
+    .company-badge {{
+        display: inline-block; background: #EFF6FF; color: #1E40AF;
+        border: 1px solid #BFDBFE; border-radius: 8px;
+        padding: 4px 14px; font-size: 0.9rem; font-weight: 600;
+        margin-bottom: 0.5rem;
     }}
     .stApp {{ direction: {direction}; }}
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown(f'<p class="main-header">{T["app_title"]}</p>', unsafe_allow_html=True)
-st.markdown(f'<p class="sub-header">{T["app_subtitle"]}</p>', unsafe_allow_html=True)
-
 # ─── Sidebar ─────────────────────────────────────────────
 with st.sidebar:
     st.header(T["settings"])
 
-    # اسم الشركة
+    # ── اسم الشركة ──────────────────────────────────────
     company_name = st.text_input(
         T["company_name"],
         placeholder=T["company_placeholder"],
@@ -50,7 +51,7 @@ with st.sidebar:
     st.subheader(T["upload_data"])
     uploaded_file = st.file_uploader(T["upload_hint"], type=['csv', 'xlsx', 'xls'])
 
-    date_col = None
+    date_col  = None
     sales_col = None
 
     if uploaded_file:
@@ -72,16 +73,14 @@ with st.sidebar:
             st.caption(T["date_warning"])
 
             date_options = [c for c in cols if any(
-                x in c.lower() for x in ['date', 'time', 'week', 'month', 'year', 'day', 'تاريخ']
+                x in c.lower() for x in ['date','time','week','month','year','day','تاريخ']
             )] or cols
-
             date_col = st.selectbox(T["date_col"], options=cols,
                 index=cols.index(date_options[0]) if date_options else 0)
 
             sales_options = [c for c in cols if any(
-                x in c.lower() for x in ['sale', 'revenue', 'amount', 'total', 'مبيع', 'إيراد', 'vente']
+                x in c.lower() for x in ['sale','revenue','amount','total','مبيع','إيراد','vente']
             )] or cols
-
             sales_col = st.selectbox(T["sales_col"], options=cols,
                 index=cols.index(sales_options[0]) if sales_options else 0)
 
@@ -97,6 +96,15 @@ with st.sidebar:
     st.divider()
     st.caption(T["built_with"])
 
+# ─── Header الرئيسي مع اسم الشركة ────────────────────────
+cname = st.session_state.get("company_name", "").strip()
+if cname:
+    st.markdown(f'<p class="main-header">📊 {cname}</p>', unsafe_allow_html=True)
+    st.markdown(f'<p class="sub-header">{T["app_subtitle"]}</p>', unsafe_allow_html=True)
+else:
+    st.markdown(f'<p class="main-header">{T["app_title"]}</p>', unsafe_allow_html=True)
+    st.markdown(f'<p class="sub-header">{T["app_subtitle"]}</p>', unsafe_allow_html=True)
+
 # ─── Session State ────────────────────────────────────────
 for key, default in [
     ('analyzed', False),
@@ -107,17 +115,21 @@ for key, default in [
     if key not in st.session_state:
         st.session_state[key] = default
 
-# اللغة تغيرت → أعد التهيئة
 if st.session_state.lang != lang:
     st.session_state.chat_history = []
     st.session_state.lang = lang
 
+# ─── helper: عنوان الرسم مع اسم الشركة ──────────────────
+def chart_title(base: str) -> str:
+    c = st.session_state.get("company_name", "").strip()
+    return f"{c} — {base}" if c else base
+
 # ─── التحليل ─────────────────────────────────────────────
 if analyze_btn and uploaded_file and date_col and sales_col:
 
-    with st.spinner("🔄 " + ("Loading and cleaning data..." if lang == "en" else
-                              "تحميل وتنظيف البيانات..." if lang == "ar" else
-                              "Chargement et nettoyage...")):
+    with st.spinner("🔄 " + ("Loading and cleaning data..." if lang=="en"
+                              else "تحميل وتنظيف البيانات..." if lang=="ar"
+                              else "Chargement et nettoyage...")):
         try:
             uploaded_file.seek(0)
             if uploaded_file.name.endswith('.csv'):
@@ -130,7 +142,7 @@ if analyze_btn and uploaded_file and date_col and sales_col:
                 raw_df = pd.read_excel(uploaded_file)
 
             raw_df.columns = raw_df.columns.str.strip()
-            date_col = date_col.strip()
+            date_col  = date_col.strip()
             sales_col = sales_col.strip()
             raw_df[date_col] = pd.to_datetime(raw_df[date_col], errors='coerce')
 
@@ -139,20 +151,22 @@ if analyze_btn and uploaded_file and date_col and sales_col:
             df = df.dropna(subset=[date_col])
             df = df.sort_values(date_col).reset_index(drop=True)
 
-            st.session_state.df       = df
-            st.session_state.date_col = date_col
+            st.session_state.df        = df
+            st.session_state.date_col  = date_col
             st.session_state.sales_col = sales_col
-            st.session_state.report   = report
+            st.session_state.report    = report
 
         except Exception as e:
             st.error(f"❌ Error loading data: {e}")
             st.stop()
 
-    with st.spinner("📊 " + ("Analyzing..." if lang == "en" else "جاري التحليل..." if lang == "ar" else "Analyse en cours...")):
+    with st.spinner("📊 " + ("Analyzing..." if lang=="en"
+                              else "جاري التحليل..." if lang=="ar"
+                              else "Analyse en cours...")):
         from src.data_loader import get_summary
-        from src.analyzer import holiday_vs_normal
+        from src.analyzer   import holiday_vs_normal
 
-        df = st.session_state.df
+        df      = st.session_state.df
         summary = get_summary(df, date_col, sales_col)
         group_col = summary.get('group_col')
 
@@ -160,8 +174,8 @@ if analyze_btn and uploaded_file and date_col and sales_col:
         if group_col:
             store_df = (
                 df.groupby(group_col)[sales_col]
-                .agg(['sum', 'mean'])
-                .rename(columns={'sum': 'total', 'mean': 'avg_weekly'})
+                .agg(['sum','mean'])
+                .rename(columns={'sum':'total','mean':'avg_weekly'})
                 .reset_index()
                 .sort_values('total', ascending=False)
             )
@@ -171,7 +185,7 @@ if analyze_btn and uploaded_file and date_col and sales_col:
         monthly_df = (
             df_monthly.groupby('month')[sales_col]
             .sum().reset_index()
-            .rename(columns={sales_col: 'total'})
+            .rename(columns={sales_col:'total'})
         )
 
         holiday_df = None
@@ -181,16 +195,21 @@ if analyze_btn and uploaded_file and date_col and sales_col:
         numeric_cols = df.select_dtypes(include='number').columns.tolist()
         if sales_col in numeric_cols:
             numeric_cols.remove(sales_col)
-        corr_series = df[[sales_col] + numeric_cols].corr()[sales_col].drop(sales_col).round(4) if numeric_cols else None
+        corr_series = (
+            df[[sales_col]+numeric_cols].corr()[sales_col].drop(sales_col).round(4)
+            if numeric_cols else None
+        )
 
-        st.session_state.summary    = summary
-        st.session_state.store_df   = store_df
-        st.session_state.monthly_df = monthly_df
-        st.session_state.holiday_df = holiday_df
+        st.session_state.summary     = summary
+        st.session_state.store_df    = store_df
+        st.session_state.monthly_df  = monthly_df
+        st.session_state.holiday_df  = holiday_df
         st.session_state.corr_series = corr_series
-        st.session_state.group_col  = group_col
+        st.session_state.group_col   = group_col
 
-    with st.spinner("🔮 " + ("Forecasting..." if lang == "en" else "جاري التنبؤ..." if lang == "ar" else "Prévision en cours...")):
+    with st.spinner("🔮 " + ("Forecasting..." if lang=="en"
+                              else "جاري التنبؤ..." if lang=="ar"
+                              else "Prévision en cours...")):
         from src.forecaster import train_and_forecast, get_forecast_summary
         forecast, prophet_data = train_and_forecast(df, weeks=12, date_col=date_col, sales_col=sales_col)
         forecast_summary = get_forecast_summary(forecast)
@@ -198,7 +217,9 @@ if analyze_btn and uploaded_file and date_col and sales_col:
         st.session_state.prophet_data     = prophet_data
         st.session_state.forecast_summary = forecast_summary
 
-    with st.spinner("🤖 " + ("Building Agent..." if lang == "en" else "بناء الوكيل..." if lang == "ar" else "Construction de l'agent...")):
+    with st.spinner("🤖 " + ("Building Agent..." if lang=="en"
+                              else "بناء الوكيل..." if lang=="ar"
+                              else "Construction de l'agent...")):
         from src.agent import build_system_prompt
         system_prompt = build_system_prompt(
             st.session_state.summary,
@@ -206,13 +227,16 @@ if analyze_btn and uploaded_file and date_col and sales_col:
             st.session_state.holiday_df,
             st.session_state.corr_series,
             st.session_state.forecast_summary,
-            lang=lang
+            lang=lang,
+            company_name=cname
         )
         st.session_state.system_prompt = system_prompt
         st.session_state.analyzed      = True
         st.session_state.chat_history  = []
 
-    st.success("✅ " + ("Analysis complete!" if lang == "en" else "اكتمل التحليل!" if lang == "ar" else "Analyse terminée !"))
+    st.success("✅ " + ("Analysis complete!" if lang=="en"
+                         else "اكتمل التحليل!" if lang=="ar"
+                         else "Analyse terminée !"))
     st.rerun()
 
 # ─── عرض النتائج ─────────────────────────────────────────
@@ -224,6 +248,11 @@ if st.session_state.analyzed:
     sales_col        = st.session_state.sales_col
     forecast_summary = st.session_state.forecast_summary
     T                = get_translations(lang)
+    cname            = st.session_state.get("company_name","").strip()
+
+    # شارة اسم الشركة فوق الـ tabs
+    if cname:
+        st.markdown(f'<span class="company-badge">🏢 {cname}</span>', unsafe_allow_html=True)
 
     tab1, tab2, tab3, tab4 = st.tabs([
         T["tab_overview"], T["tab_charts"], T["tab_forecast"], T["tab_agent"]
@@ -269,114 +298,30 @@ if st.session_state.analyzed:
 
         st.divider()
 
-        # ── PDF ──────────────────────────────────────────
+        # ── PDF احترافي ────────────────────────────────────
         if st.button(T["download_pdf"], type="secondary"):
             with st.spinner(T["generating_pdf"]):
-                from reportlab.lib.pagesizes import A4
-                from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-                from reportlab.lib.units import inch
-                from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
-                from reportlab.lib import colors
-                import io
-                import matplotlib
-                matplotlib.use('Agg')
-                import matplotlib.pyplot as plt
-                import matplotlib.ticker as mticker
-
-                buffer = io.BytesIO()
-                doc = SimpleDocTemplate(buffer, pagesize=A4,
-                    rightMargin=inch*0.75, leftMargin=inch*0.75,
-                    topMargin=inch*0.75, bottomMargin=inch*0.75)
-
-                styles = getSampleStyleSheet()
-                title_style   = ParagraphStyle('title', fontSize=20, fontName='Helvetica-Bold',
-                    spaceAfter=12, textColor=colors.HexColor('#1E40AF'))
-                heading_style = ParagraphStyle('heading', fontSize=14, fontName='Helvetica-Bold',
-                    spaceAfter=8, textColor=colors.HexColor('#1E40AF'), spaceBefore=16)
-                normal_style  = ParagraphStyle('normal', fontSize=10, fontName='Helvetica',
-                    spaceAfter=6, leading=14)
-
-                story = []
-                cname = st.session_state.get("company_name", "")
-                title_text = f"{cname} — {T['pdf_title']}" if cname else T['pdf_title']
-                story.append(Paragraph(title_text, title_style))
-                story.append(Paragraph(
-                    f"{T['pdf_generated']}: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}",
-                    normal_style
-                ))
-                story.append(Spacer(1, 0.2*inch))
-
-                story.append(Paragraph(T["pdf_key_metrics"], heading_style))
-                metrics_data = [
-                    [T["pdf_metric"], T["pdf_value"]],
-                    [T["total_records"],  f"{summary['total_records']:,}"],
-                    [T["pdf_date_range"], summary.get('date_range', 'N/A')],
-                    [T["total_sales"],    f"${summary['total_sales']:,.2f}"],
-                    [T["pdf_avg_period"], f"${summary['avg_weekly_sales']:,.2f}"],
-                    [T["pdf_best_period"],f"${summary['max_single_week']:,.2f}"],
-                ]
-                metrics_table = Table(metrics_data, colWidths=[3*inch, 3*inch])
-                metrics_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E40AF')),
-                    ('TEXTCOLOR',  (0,0), (-1,0), colors.white),
-                    ('FONTNAME',   (0,0), (-1,0), 'Helvetica-Bold'),
-                    ('FONTSIZE',   (0,0), (-1,-1), 10),
-                    ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F8FAFC')]),
-                    ('GRID',  (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
-                    ('PADDING',(0,0), (-1,-1), 8),
-                ]))
-                story.append(metrics_table)
-                story.append(Spacer(1, 0.2*inch))
-
-                story.append(Paragraph(T["pdf_trend"], heading_style))
-                weekly = df.groupby(date_col)[sales_col].sum().reset_index()
-                fig, ax = plt.subplots(figsize=(7, 3))
-                ax.plot(weekly[date_col], weekly[sales_col], color='#2563EB', linewidth=1, alpha=0.6)
-                weekly['ma4'] = weekly[sales_col].rolling(4).mean()
-                ax.plot(weekly[date_col], weekly['ma4'], color='#DC2626', linewidth=2, label=T["period_avg"])
-                ax.yaxis.set_major_formatter(mticker.FuncFormatter(
-                    lambda x, p: f'${x/1e6:.1f}M' if x >= 1e6 else f'${x/1e3:.0f}K'))
-                ax.legend(fontsize=8); ax.grid(True, alpha=0.3); plt.tight_layout()
-                img_buf = io.BytesIO()
-                plt.savefig(img_buf, format='png', dpi=150, bbox_inches='tight')
-                plt.close(); img_buf.seek(0)
-                story.append(Image(img_buf, width=6.5*inch, height=2.5*inch))
-                story.append(Spacer(1, 0.2*inch))
-
-                story.append(Paragraph(T["pdf_forecast"], heading_style))
-                forecast_data = [
-                    [T["pdf_period"], T["pdf_expected"]],
-                    [T["next_4"],  f"${forecast_summary['next_4_weeks']:,.0f}"],
-                    [T["next_8"],  f"${forecast_summary['next_8_weeks']:,.0f}"],
-                    [T["next_12"], f"${forecast_summary['next_12_weeks']:,.0f}"],
-                    [T["pdf_peak_week"],  forecast_summary['peak_week']],
-                    [T["pdf_peak_sales"], f"${forecast_summary['peak_expected_sales']:,.0f}"],
-                ]
-                forecast_table = Table(forecast_data, colWidths=[3*inch, 3*inch])
-                forecast_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#16A34A')),
-                    ('TEXTCOLOR',  (0,0), (-1,0), colors.white),
-                    ('FONTNAME',   (0,0), (-1,0), 'Helvetica-Bold'),
-                    ('FONTSIZE',   (0,0), (-1,-1), 10),
-                    ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F0FDF4')]),
-                    ('GRID',  (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
-                    ('PADDING',(0,0), (-1,-1), 8),
-                ]))
-                story.append(forecast_table)
-                story.append(Spacer(1, 0.2*inch))
-
-                if 'ai_result' in st.session_state:
-                    story.append(Paragraph(T["pdf_ai_section"], heading_style))
-                    clean_text = st.session_state.ai_result.replace('#', '').replace('*', '')
-                    for line in clean_text.split('\n'):
-                        if line.strip():
-                            story.append(Paragraph(line.strip(), normal_style))
-
-                doc.build(story)
-                buffer.seek(0)
+                from src.pdf_gen import generate_pdf
+                pdf_bytes = generate_pdf(
+                    df=df,
+                    date_col=date_col,
+                    sales_col=sales_col,
+                    summary=summary,
+                    store_df=st.session_state.store_df,
+                    corr_series=st.session_state.corr_series,
+                    forecast=st.session_state.forecast,
+                    prophet_data=st.session_state.prophet_data,
+                    forecast_summary=forecast_summary,
+                    monthly_df=st.session_state.monthly_df,
+                    group_col=st.session_state.group_col,
+                    company_name=cname,
+                    T=T,
+                    ai_result=st.session_state.get('ai_result'),
+                    ai_type=st.session_state.get('ai_result_type'),
+                )
                 st.download_button(
                     label=T["download_pdf_now"],
-                    data=buffer,
+                    data=pdf_bytes,
                     file_name=f"sales_report_{pd.Timestamp.now().strftime('%Y%m%d')}.pdf",
                     mime="application/pdf"
                 )
@@ -406,42 +351,51 @@ if st.session_state.analyzed:
             elif x >= 1e3: return f'${x/1e3:.0f}K'
             return f'${x:.0f}'
 
+        # رسم اتجاه المبيعات — العنوان يحمل اسم الشركة
         st.subheader(T["sales_trend"])
         weekly = df.groupby(date_col)[sales_col].sum().reset_index()
-        fig, ax = plt.subplots(figsize=(12, 4))
+        fig, ax = plt.subplots(figsize=(12,4))
         ax.plot(weekly[date_col], weekly[sales_col], color='#2563EB', linewidth=1, alpha=0.6)
         weekly['ma4'] = weekly[sales_col].rolling(4).mean()
         ax.plot(weekly[date_col], weekly['ma4'], color='#DC2626', linewidth=2.5, label=T["period_avg"])
+        ax.set_title(chart_title(T["sales_trend"]), fontsize=13, fontweight='bold')
         ax.yaxis.set_major_formatter(mticker.FuncFormatter(fmt))
         ax.legend(); ax.grid(True, alpha=0.3); plt.tight_layout()
         st.pyplot(fig); plt.close()
 
+        # رسم المبيعات الشهرية
         st.subheader(T["monthly_sales"])
         monthly_df = st.session_state.monthly_df
-        fig, ax = plt.subplots(figsize=(12, 4))
-        ax.bar([str(m) for m in monthly_df['month']], monthly_df['total'], color='#16A34A', alpha=0.8)
+        fig, ax = plt.subplots(figsize=(12,4))
+        ax.bar([str(m) for m in monthly_df['month']], monthly_df['total'],
+               color='#16A34A', alpha=0.8)
+        ax.set_title(chart_title(T["monthly_sales"]), fontsize=13, fontweight='bold')
         ax.yaxis.set_major_formatter(mticker.FuncFormatter(fmt))
         ax.grid(True, axis='y', alpha=0.3)
         plt.xticks(rotation=45, ha='right', fontsize=8); plt.tight_layout()
         st.pyplot(fig); plt.close()
 
+        # رسم المتاجر
         if st.session_state.store_df is not None:
             group_col = st.session_state.group_col
             store_df  = st.session_state.store_df
             st.subheader(f"{T['sales_by']} {group_col}")
             top10 = store_df.head(10)
-            fig, ax = plt.subplots(figsize=(12, 4))
+            fig, ax = plt.subplots(figsize=(12,4))
             ax.bar(top10[group_col].astype(str), top10['total'], color='#2563EB', alpha=0.85)
+            ax.set_title(chart_title(f"{T['sales_by']} {group_col}"), fontsize=13, fontweight='bold')
             ax.yaxis.set_major_formatter(mticker.FuncFormatter(fmt))
             ax.grid(True, axis='y', alpha=0.3); plt.tight_layout()
             st.pyplot(fig); plt.close()
 
+        # رسم الارتباط
         if st.session_state.corr_series is not None:
             st.subheader(T["correlation"])
             corr = st.session_state.corr_series
-            fig, ax = plt.subplots(figsize=(8, 4))
-            bar_colors = ['#16A34A' if v > 0 else '#DC2626' for v in corr.values]
+            fig, ax = plt.subplots(figsize=(8,4))
+            bar_colors = ['#16A34A' if v>0 else '#DC2626' for v in corr.values]
             ax.barh(corr.index, corr.values, color=bar_colors, alpha=0.85)
+            ax.set_title(chart_title(T["correlation"]), fontsize=13, fontweight='bold')
             ax.axvline(x=0, color='black', linewidth=0.8)
             ax.grid(True, axis='x', alpha=0.3); plt.tight_layout()
             st.pyplot(fig); plt.close()
@@ -462,16 +416,17 @@ if st.session_state.analyzed:
 
         forecast     = st.session_state.forecast
         prophet_data = st.session_state.prophet_data
-        fig, ax = plt.subplots(figsize=(12, 5))
-        ax.plot(prophet_data['ds'], prophet_data['y'], color='#2563EB', linewidth=1,
-                label=T["historical"], alpha=0.7)
+        fig, ax = plt.subplots(figsize=(12,5))
+        ax.plot(prophet_data['ds'], prophet_data['y'], color='#2563EB',
+                linewidth=1, label=T["historical"], alpha=0.7)
         future = forecast[forecast['ds'] > prophet_data['ds'].max()]
-        ax.plot(future['ds'], future['yhat'], color='#DC2626', linewidth=2.5,
-                label=T["forecast_label"])
+        ax.plot(future['ds'], future['yhat'], color='#DC2626',
+                linewidth=2.5, label=T["forecast_label"])
         ax.fill_between(future['ds'], future['yhat_lower'], future['yhat_upper'],
                         alpha=0.15, color='#DC2626')
+        ax.set_title(chart_title(T["forecast_title"]), fontsize=13, fontweight='bold')
         ax.yaxis.set_major_formatter(mticker.FuncFormatter(
-            lambda x, p: f'${x/1e6:.1f}M' if x >= 1e6 else f'${x/1e3:.0f}K'))
+            lambda x,p: f'${x/1e6:.1f}M' if x>=1e6 else f'${x/1e3:.0f}K'))
         ax.legend(); ax.grid(True, alpha=0.3); plt.tight_layout()
         st.pyplot(fig); plt.close()
 
