@@ -3,7 +3,11 @@ import streamlit as st
 import os
 from anthropic import Anthropic
 
-api_key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+try :
+    api_key = st.secrets.get("ANTHROPIC_API_KEY") 
+except Exception:
+    api_key = None
+api_key =api_key or os.getenv("ANTHROPIC_API_KEY")    
 client = Anthropic(api_key=api_key)
 
 LANG_INSTRUCTION = {
