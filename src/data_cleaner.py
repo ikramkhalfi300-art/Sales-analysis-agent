@@ -5,7 +5,7 @@ import numpy as np
 def clean_data(df, date_col='Date', sales_col='Weekly_Sales'):
     """
     تنظيف البيانات بمنطق نسب الـ nulls:
-      < 5%  → ملأ بالمتوسط/الأكثر تكراراً
+      < 5%  → ملأ بالمتوسط / الأكثر تكراراً
       5-20% → احذف الصفوف
       > 20% → احذف العمود كله
     """
@@ -18,7 +18,7 @@ def clean_data(df, date_col='Date', sales_col='Weekly_Sales'):
     sales_col = sales_col.strip()
     report.append("✅ Column names cleaned")
 
-    # ── التاريخ ──────────────────────────────────────
+    # ── التاريخ ──────────────────────────────────────────
     try:
         formats = [
             '%m/%d/%Y', '%d/%m/%Y', '%Y-%m-%d',
@@ -47,17 +47,18 @@ def clean_data(df, date_col='Date', sales_col='Weekly_Sales'):
     except Exception as e:
         report.append(f"❌ Date parsing failed: {e}")
 
-    # ── المبيعات السالبة ─────────────────────────────
-    negative = (df[sales_col] < 0).sum()
-    if negative > 0:
-        df = df[df[sales_col] >= 0]
-        report.append(f"⚠️ Removed {negative} rows with negative sales")
+    # ── المبيعات السالبة ─────────────────────────────────
+    if sales_col in df.columns:
+        negative = (df[sales_col] < 0).sum()
+        if negative > 0:
+            df = df[df[sales_col] >= 0]
+            report.append(f"⚠️ Removed {negative} rows with negative sales")
 
-    zero_sales = (df[sales_col] == 0).sum()
-    if zero_sales > 0:
-        report.append(f"ℹ️ Found {zero_sales} rows with zero sales (kept)")
+        zero_sales = (df[sales_col] == 0).sum()
+        if zero_sales > 0:
+            report.append(f"ℹ️ Found {zero_sales} rows with zero sales (kept)")
 
-    # ── Duplicates ───────────────────────────────────
+    # ── Duplicates ───────────────────────────────────────
     dupes = df.duplicated().sum()
     if dupes > 0:
         df = df.drop_duplicates()
@@ -65,7 +66,7 @@ def clean_data(df, date_col='Date', sales_col='Weekly_Sales'):
     else:
         report.append("✅ No duplicates found")
 
-    # ── Nulls بمنطق النسب ────────────────────────────
+    # ── Nulls بمنطق النسب ────────────────────────────────
     total_rows = len(df)
     null_counts = df.isnull().sum()
     total_nulls = null_counts.sum()
@@ -81,26 +82,37 @@ def clean_data(df, date_col='Date', sales_col='Weekly_Sales'):
             pct = count / total_rows
 
             if pct < 0.05:
+                # أقل من 5% → ملأ
                 if pd.api.types.is_numeric_dtype(df[col]):
                     fill_val = df[col].mean()
                     df[col] = df[col].fillna(fill_val)
-                    report.append(f"✅ '{col}': {pct*100:.1f}% nulls → filled with mean ({fill_val:.2f})")
+                    report.append(
+                        f"✅ '{col}': {pct*100:.1f}% nulls → filled with mean ({fill_val:.2f})"
+                    )
                 else:
                     fill_val = df[col].mode()[0] if not df[col].mode().empty else 'Unknown'
                     df[col] = df[col].fillna(fill_val)
-                    report.append(f"✅ '{col}': {pct*100:.1f}% nulls → filled with most frequent ('{fill_val}')")
+                    report.append(
+                        f"✅ '{col}': {pct*100:.1f}% nulls → filled with most frequent ('{fill_val}')"
+                    )
 
             elif pct <= 0.20:
+                # 5-20% → احذف الصفوف
                 null_rows = df[col].isna()
                 rows_to_drop_mask = rows_to_drop_mask | null_rows
-                report.append(f"⚠️ '{col}': {pct*100:.1f}% nulls → will drop {null_rows.sum()} rows")
+                report.append(
+                    f"⚠️ '{col}': {pct*100:.1f}% nulls → will drop {null_rows.sum()} rows"
+                )
 
             else:
+                # أكثر من 20% → احذف العمود
                 cols_to_drop.append(col)
-                report.append(f"🗑️ '{col}': {pct*100:.1f}% nulls → dropping entire column")
+                report.append(
+                    f"🗑️ '{col}': {pct*100:.1f}% nulls → dropping entire column"
+                )
 
     if rows_to_drop_mask.any():
-        dropped_rows = rows_to_drop_mask.sum()
+        dropped_rows = int(rows_to_drop_mask.sum())
         df = df[~rows_to_drop_mask]
         report.append(f"⚠️ Dropped {dropped_rows} rows due to 5-20% null columns")
 
@@ -108,16 +120,18 @@ def clean_data(df, date_col='Date', sales_col='Weekly_Sales'):
         df = df.drop(columns=cols_to_drop)
         report.append(f"🗑️ Dropped columns: {cols_to_drop}")
 
-    # ── Outliers (تسجيل فقط) ─────────────────────────
+    # ── Outliers (تسجيل فقط) ─────────────────────────────
     if sales_col in df.columns:
         Q1 = df[sales_col].quantile(0.25)
         Q3 = df[sales_col].quantile(0.75)
         IQR = Q3 - Q1
         outliers = ((df[sales_col] < Q1 - 3*IQR) | (df[sales_col] > Q3 + 3*IQR)).sum()
         if outliers > 0:
-            report.append(f"ℹ️ Found {outliers} outliers in {sales_col} (kept - review manually)")
+            report.append(
+                f"ℹ️ Found {outliers} outliers in {sales_col} (kept - review manually)"
+            )
 
-    # ── ترتيب ────────────────────────────────────────
+    # ── ترتيب ────────────────────────────────────────────
     if 'Store' in df.columns:
         df = df.sort_values(['Store', date_col]).reset_index(drop=True)
     else:

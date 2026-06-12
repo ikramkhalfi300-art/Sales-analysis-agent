@@ -31,14 +31,13 @@ with st.sidebar:
             if uploaded_file.name.endswith('.csv'):
                 try:
                     preview_df = pd.read_csv(uploaded_file)
-                except:
+                except Exception:
                     uploaded_file.seek(0)
                     preview_df = pd.read_csv(uploaded_file, encoding='latin1')
             else:
                 preview_df = pd.read_excel(uploaded_file)
             uploaded_file.seek(0)
 
-            # تنظيف أسماء الأعمدة
             preview_df.columns = preview_df.columns.str.strip()
             cols = preview_df.columns.tolist()
 
@@ -69,7 +68,7 @@ with st.sidebar:
         st.info("👆 Upload a file to get started")
 
     st.divider()
-    st.caption("Built with Claude AI +Statsmodels")
+    st.caption("Built with Claude AI + Statsmodels")
 
 # ─── Session State ────────────────────────────────────────
 if 'analyzed' not in st.session_state:
@@ -88,18 +87,16 @@ if analyze_btn and uploaded_file and date_col and sales_col:
             if uploaded_file.name.endswith('.csv'):
                 try:
                     raw_df = pd.read_csv(uploaded_file)
-                except:
+                except Exception:
                     uploaded_file.seek(0)
                     raw_df = pd.read_csv(uploaded_file, encoding='latin1')
             else:
                 raw_df = pd.read_excel(uploaded_file)
 
-            # تنظيف أسماء الأعمدة
             raw_df.columns = raw_df.columns.str.strip()
             date_col = date_col.strip()
             sales_col = sales_col.strip()
 
-            # تحويل التاريخ بكل الطرق الممكنة
             raw_df[date_col] = pd.to_datetime(raw_df[date_col], errors='coerce')
 
             from src.data_cleaner import clean_data
@@ -190,6 +187,7 @@ if st.session_state.analyzed:
     df = st.session_state.df
     date_col = st.session_state.date_col
     sales_col = st.session_state.sales_col
+    forecast_summary = st.session_state.forecast_summary
 
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "📈 Charts", "🔮 Forecast", "🤖 AI Agent"])
 
@@ -209,12 +207,28 @@ if st.session_state.analyzed:
 
         st.divider()
 
-        # Executive Summary
-        st.subheader("📋 Executive Summary")
-        if st.button("🤖 Generate Executive Summary", type="primary"):
-            with st.spinner("Generating report..."):
-                from src.agent import ask_agent
-                exec_prompt = """
+        # ── AI Analysis Options ─────────────────────────
+        st.subheader("🤖 AI Analysis")
+
+        analysis_type = st.selectbox(
+            "Choose analysis type:",
+            options=[
+                "📋 Executive Summary",
+                "📊 Performance Analysis",
+                "🔴 Problem Detection",
+                "💡 Profit Improvement Suggestions",
+            ]
+        )
+
+        btn_label = {
+            "📋 Executive Summary":              "🤖 Generate Executive Summary",
+            "📊 Performance Analysis":           "📊 Analyze Performance",
+            "🔴 Problem Detection":              "🔴 Detect Problems",
+            "💡 Profit Improvement Suggestions": "💡 Get Profit Suggestions",
+        }
+
+        prompts = {
+            "📋 Executive Summary": """
 Generate a professional Executive Summary with these sections:
 
 ## 1. 📊 Overall Performance
@@ -238,18 +252,217 @@ Ranked by potential revenue impact.
 What should management expect next quarter?
 
 Be direct, specific with numbers, and actionable.
-"""
-                summary_text, _ = ask_agent(exec_prompt, st.session_state.system_prompt, [])
-                st.session_state.exec_summary = summary_text
+""",
+            "📊 Performance Analysis": """
+Provide a detailed Performance Analysis with these sections:
 
-        if 'exec_summary' in st.session_state:
-            st.markdown(st.session_state.exec_summary)
+## 1. 📈 Sales Trend Analysis
+Describe the overall sales trajectory. Is it growing, declining, or flat? 
+Identify key turning points and what caused them.
+
+## 2. 🏪 Store/Branch Performance Breakdown
+Rank all units by performance. Highlight:
+- Top 3 performers: what are they doing right?
+- Bottom 3 performers: what are the warning signs?
+- Middle tier: who has the most growth potential?
+
+## 3. 📅 Seasonal & Time Patterns
+Identify peak periods, slow seasons, and weekly patterns.
+How can management prepare for these cycles?
+
+## 4. 📊 Key Performance Indicators
+Calculate and comment on:
+- Revenue per period vs target
+- Growth rate (if measurable)
+- Consistency of performance
+
+Be specific with numbers from the data.
+""",
+            "🔴 Problem Detection": """
+Analyze the data and identify all business problems:
+
+## 1. 🚨 Critical Issues (Immediate Action Required)
+List problems that need to be fixed this week.
+Include specific numbers and affected units.
+
+## 2. ⚠️ Warning Signs (Monitor Closely)
+Trends that could become serious if ignored.
+What early indicators should management watch?
+
+## 3. 📉 Underperformance Root Causes
+For each struggling unit or period:
+- What is the likely cause?
+- Is it internal (operations) or external (market)?
+
+## 4. 🔗 Hidden Correlations
+Are there external factors (temperature, fuel, CPI, holidays) 
+hurting performance? Explain the impact.
+
+## 5. 🛠️ Recommended Fixes
+For each problem, provide a specific, actionable fix with expected impact.
+
+Be blunt and specific. Use exact numbers.
+""",
+            "💡 Profit Improvement Suggestions": """
+Provide strategic profit improvement recommendations:
+
+## 1. 💰 Quick Wins (0-30 Days)
+Actions that can increase revenue immediately.
+Estimate the potential revenue gain for each.
+
+## 2. 📈 Medium-Term Strategy (1-3 Months)
+Structural changes to improve profitability.
+Which stores/periods to focus on first and why?
+
+## 3. 🌟 High-Impact Opportunities
+Based on the data, where is the biggest untapped potential?
+- Underperforming stores with high potential
+- Underserved peak periods
+- Pricing or product mix opportunities
+
+## 4. 🗑️ Cut or Restructure
+Which activities, stores, or periods are destroying value?
+Provide a clear recommendation: fix, restructure, or close.
+
+## 5. 🔮 Revenue Forecast Impact
+If these recommendations are implemented, what revenue increase 
+can be expected in the next 12 weeks?
+
+Be bold, specific, and financially grounded.
+""",
+        }
+
+        if st.button(btn_label[analysis_type], type="primary"):
+            with st.spinner("Generating analysis..."):
+                from src.agent import ask_agent
+                selected_prompt = prompts[analysis_type]
+                result_text, _ = ask_agent(selected_prompt, st.session_state.system_prompt, [])
+                st.session_state.ai_result = result_text
+                st.session_state.ai_result_type = analysis_type
+
+        if 'ai_result' in st.session_state:
+            st.markdown(f"### {st.session_state.ai_result_type}")
+            st.markdown(st.session_state.ai_result)
             st.download_button(
-                label="📥 Download Report",
-                data=st.session_state.exec_summary,
-                file_name="executive_summary.txt",
+                label="📥 Download as Text",
+                data=st.session_state.ai_result,
+                file_name="analysis_result.txt",
                 mime="text/plain"
             )
+
+        st.divider()
+
+        # ── PDF Report ──────────────────────────────────
+        if st.button("📥 Download PDF Report", type="secondary"):
+            with st.spinner("Generating PDF..."):
+                from reportlab.lib.pagesizes import A4
+                from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+                from reportlab.lib.units import inch
+                from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+                from reportlab.lib import colors
+                import io
+                import matplotlib
+                matplotlib.use('Agg')
+                import matplotlib.pyplot as plt
+                import matplotlib.ticker as mticker
+
+                buffer = io.BytesIO()
+                doc = SimpleDocTemplate(buffer, pagesize=A4,
+                    rightMargin=inch*0.75, leftMargin=inch*0.75,
+                    topMargin=inch*0.75, bottomMargin=inch*0.75)
+
+                styles = getSampleStyleSheet()
+                title_style = ParagraphStyle('title', fontSize=20, fontName='Helvetica-Bold',
+                    spaceAfter=12, textColor=colors.HexColor('#1E40AF'))
+                heading_style = ParagraphStyle('heading', fontSize=14, fontName='Helvetica-Bold',
+                    spaceAfter=8, textColor=colors.HexColor('#1E40AF'), spaceBefore=16)
+                normal_style = ParagraphStyle('normal', fontSize=10, fontName='Helvetica',
+                    spaceAfter=6, leading=14)
+
+                story = []
+
+                story.append(Paragraph("Sales Analysis Report", title_style))
+                story.append(Paragraph(f"Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}", normal_style))
+                story.append(Spacer(1, 0.2*inch))
+
+                story.append(Paragraph("📊 Key Metrics", heading_style))
+                metrics_data = [
+                    ['Metric', 'Value'],
+                    ['Total Records', f"{summary['total_records']:,}"],
+                    ['Date Range', summary.get('date_range', 'N/A')],
+                    ['Total Sales', f"${summary['total_sales']:,.2f}"],
+                    ['Avg per Period', f"${summary['avg_weekly_sales']:,.2f}"],
+                    ['Best Period', f"${summary['max_single_week']:,.2f}"],
+                ]
+                metrics_table = Table(metrics_data, colWidths=[3*inch, 3*inch])
+                metrics_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E40AF')),
+                    ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                    ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0,0), (-1,-1), 10),
+                    ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F8FAFC')]),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
+                    ('PADDING', (0,0), (-1,-1), 8),
+                ]))
+                story.append(metrics_table)
+                story.append(Spacer(1, 0.2*inch))
+
+                story.append(Paragraph("📈 Sales Trend", heading_style))
+                weekly = df.groupby(date_col)[sales_col].sum().reset_index()
+                fig, ax = plt.subplots(figsize=(7, 3))
+                ax.plot(weekly[date_col], weekly[sales_col], color='#2563EB', linewidth=1, alpha=0.6)
+                weekly['ma4'] = weekly[sales_col].rolling(4).mean()
+                ax.plot(weekly[date_col], weekly['ma4'], color='#DC2626', linewidth=2, label='4-Period Avg')
+                ax.yaxis.set_major_formatter(mticker.FuncFormatter(
+                    lambda x, p: f'${x/1e6:.1f}M' if x >= 1e6 else f'${x/1e3:.0f}K'))
+                ax.legend(fontsize=8)
+                ax.grid(True, alpha=0.3)
+                plt.tight_layout()
+                img_buf = io.BytesIO()
+                plt.savefig(img_buf, format='png', dpi=150, bbox_inches='tight')
+                plt.close()
+                img_buf.seek(0)
+                story.append(Image(img_buf, width=6.5*inch, height=2.5*inch))
+                story.append(Spacer(1, 0.2*inch))
+
+                story.append(Paragraph("🔮 Forecast Summary", heading_style))
+                forecast_data = [
+                    ['Period', 'Expected Sales'],
+                    ['Next 4 Weeks', f"${forecast_summary['next_4_weeks']:,.0f}"],
+                    ['Next 8 Weeks', f"${forecast_summary['next_8_weeks']:,.0f}"],
+                    ['Next 12 Weeks', f"${forecast_summary['next_12_weeks']:,.0f}"],
+                    ['Peak Week', forecast_summary['peak_week']],
+                    ['Peak Sales', f"${forecast_summary['peak_expected_sales']:,.0f}"],
+                ]
+                forecast_table = Table(forecast_data, colWidths=[3*inch, 3*inch])
+                forecast_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#16A34A')),
+                    ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                    ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0,0), (-1,-1), 10),
+                    ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F0FDF4')]),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
+                    ('PADDING', (0,0), (-1,-1), 8),
+                ]))
+                story.append(forecast_table)
+                story.append(Spacer(1, 0.2*inch))
+
+                if 'ai_result' in st.session_state:
+                    story.append(Paragraph(f"🤖 {st.session_state.ai_result_type}", heading_style))
+                    clean_text = st.session_state.ai_result.replace('#', '').replace('*', '')
+                    for line in clean_text.split('\n'):
+                        if line.strip():
+                            story.append(Paragraph(line.strip(), normal_style))
+
+                doc.build(story)
+                buffer.seek(0)
+
+                st.download_button(
+                    label="📄 Download PDF Now",
+                    data=buffer,
+                    file_name=f"sales_report_{pd.Timestamp.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf"
+                )
 
         st.divider()
 
@@ -263,123 +476,11 @@ Be direct, specific with numbers, and actionable.
         if st.session_state.store_df is not None:
             st.subheader(f"🏪 Performance by {st.session_state.group_col}")
             st.dataframe(st.session_state.store_df, use_container_width=True)
-    # ── PDF Report ──────────────────────────────────────
-if st.button("📥 Download PDF Report", type="secondary"):
-    with st.spinner("Generating PDF..."):
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.units import inch
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
-        from reportlab.lib import colors
-        import io
-        import matplotlib.pyplot as plt
-        import matplotlib.ticker as mticker
 
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4,
-            rightMargin=inch*0.75, leftMargin=inch*0.75,
-            topMargin=inch*0.75, bottomMargin=inch*0.75)
-
-        styles = getSampleStyleSheet()
-        title_style = ParagraphStyle('title', fontSize=20, fontName='Helvetica-Bold',
-            spaceAfter=12, textColor=colors.HexColor('#1E40AF'))
-        heading_style = ParagraphStyle('heading', fontSize=14, fontName='Helvetica-Bold',
-            spaceAfter=8, textColor=colors.HexColor('#1E40AF'), spaceBefore=16)
-        normal_style = ParagraphStyle('normal', fontSize=10, fontName='Helvetica',
-            spaceAfter=6, leading=14)
-
-        story = []
-
-        # العنوان
-        story.append(Paragraph("Sales Analysis Report", title_style))
-        story.append(Paragraph(f"Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}", normal_style))
-        story.append(Spacer(1, 0.2*inch))
-
-        # ملخص الأرقام
-        story.append(Paragraph("📊 Key Metrics", heading_style))
-        metrics_data = [
-            ['Metric', 'Value'],
-            ['Total Records', f"{summary['total_records']:,}"],
-            ['Date Range', summary.get('date_range', 'N/A')],
-            ['Total Sales', f"${summary['total_sales']:,.2f}"],
-            ['Avg per Period', f"${summary['avg_weekly_sales']:,.2f}"],
-            ['Best Period', f"${summary['max_single_week']:,.2f}"],
-        ]
-        metrics_table = Table(metrics_data, colWidths=[3*inch, 3*inch])
-        metrics_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E40AF')),
-            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0,0), (-1,-1), 10),
-            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F8FAFC')]),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
-            ('PADDING', (0,0), (-1,-1), 8),
-        ]))
-        story.append(metrics_table)
-        story.append(Spacer(1, 0.2*inch))
-
-        # رسم المبيعات
-        story.append(Paragraph("📈 Sales Trend", heading_style))
-        weekly = df.groupby(date_col)[sales_col].sum().reset_index()
-        fig, ax = plt.subplots(figsize=(7, 3))
-        ax.plot(weekly[date_col], weekly[sales_col], color='#2563EB', linewidth=1, alpha=0.6)
-        weekly['ma4'] = weekly[sales_col].rolling(4).mean()
-        ax.plot(weekly[date_col], weekly['ma4'], color='#DC2626', linewidth=2, label='4-Period Avg')
-        ax.yaxis.set_major_formatter(mticker.FuncFormatter(
-            lambda x, p: f'${x/1e6:.1f}M' if x >= 1e6 else f'${x/1e3:.0f}K'))
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        img_buf = io.BytesIO()
-        plt.savefig(img_buf, format='png', dpi=150, bbox_inches='tight')
-        plt.close()
-        img_buf.seek(0)
-        story.append(Image(img_buf, width=6.5*inch, height=2.5*inch))
-        story.append(Spacer(1, 0.2*inch))
-
-        # التوقعات
-        story.append(Paragraph("🔮 Forecast Summary", heading_style))
-        forecast_data = [
-            ['Period', 'Expected Sales'],
-            ['Next 4 Weeks', f"${forecast_summary['next_4_weeks']:,.0f}"],
-            ['Next 8 Weeks', f"${forecast_summary['next_8_weeks']:,.0f}"],
-            ['Next 12 Weeks', f"${forecast_summary['next_12_weeks']:,.0f}"],
-            ['Peak Week', forecast_summary['peak_week']],
-            ['Peak Sales', f"${forecast_summary['peak_expected_sales']:,.0f}"],
-        ]
-        forecast_table = Table(forecast_data, colWidths=[3*inch, 3*inch])
-        forecast_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#16A34A')),
-            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0,0), (-1,-1), 10),
-            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F0FDF4')]),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
-            ('PADDING', (0,0), (-1,-1), 8),
-        ]))
-        story.append(forecast_table)
-        story.append(Spacer(1, 0.2*inch))
-
-        # Executive Summary
-        if 'exec_summary' in st.session_state:
-            story.append(Paragraph("🤖 AI Executive Summary", heading_style))
-            clean_text = st.session_state.exec_summary.replace('#', '').replace('*', '')
-            for line in clean_text.split('\n'):
-                if line.strip():
-                    story.append(Paragraph(line.strip(), normal_style))
-
-        doc.build(story)
-        buffer.seek(0)
-
-        st.download_button(
-            label="📄 Download PDF Now",
-            data=buffer,
-            file_name=f"sales_report_{pd.Timestamp.now().strftime('%Y%m%d')}.pdf",
-            mime="application/pdf"
-        )
-     
     # ── Tab 2 ──────────────────────────────────────────
     with tab2:
+        import matplotlib
+        matplotlib.use('Agg')
         import matplotlib.pyplot as plt
         import matplotlib.ticker as mticker
 
@@ -422,19 +523,20 @@ if st.button("📥 Download PDF Report", type="secondary"):
             st.subheader("🔗 Correlation with Sales")
             corr = st.session_state.corr_series
             fig, ax = plt.subplots(figsize=(8, 4))
-            colors = ['#16A34A' if v > 0 else '#DC2626' for v in corr.values]
-            ax.barh(corr.index, corr.values, color=colors, alpha=0.85)
+            bar_colors = ['#16A34A' if v > 0 else '#DC2626' for v in corr.values]
+            ax.barh(corr.index, corr.values, color=bar_colors, alpha=0.85)
             ax.axvline(x=0, color='black', linewidth=0.8)
             ax.grid(True, axis='x', alpha=0.3); plt.tight_layout()
             st.pyplot(fig); plt.close()
 
     # ── Tab 3 ──────────────────────────────────────────
     with tab3:
+        import matplotlib
+        matplotlib.use('Agg')
         import matplotlib.pyplot as plt
         import matplotlib.ticker as mticker
 
         st.subheader("🔮 Sales Forecast - Next 12 Weeks")
-        forecast_summary = st.session_state.forecast_summary
 
         col1, col2, col3 = st.columns(3)
         with col1: st.metric("Next 4 Weeks", f"${forecast_summary['next_4_weeks']:,.0f}")
@@ -495,7 +597,7 @@ else:
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("""
-- 📊 Automatic data cleaning
+- 📊 Smart data cleaning (null threshold logic)
 - 📈 Sales trend charts
 - 🏪 Store/branch comparison
 - 🔗 External factor analysis
@@ -504,6 +606,6 @@ else:
         st.markdown("""
 - 🔮 12-week sales forecast
 - 🤖 AI-powered insights
-- 💬 Chat with your data
-- 🌐 Works with any CSV/Excel
+- 📊 Performance analysis
+- 🔴 Problem detection & profit tips
 """)
