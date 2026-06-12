@@ -69,7 +69,7 @@ with st.sidebar:
         st.info("👆 Upload a file to get started")
 
     st.divider()
-    st.caption("Built with Claude AI + Prophet")
+    st.caption("Built with Claude AI +Statsmodels")
 
 # ─── Session State ────────────────────────────────────────
 if 'analyzed' not in st.session_state:
@@ -263,7 +263,121 @@ Be direct, specific with numbers, and actionable.
         if st.session_state.store_df is not None:
             st.subheader(f"🏪 Performance by {st.session_state.group_col}")
             st.dataframe(st.session_state.store_df, use_container_width=True)
+    # ── PDF Report ──────────────────────────────────────
+if st.button("📥 Download PDF Report", type="secondary"):
+    with st.spinner("Generating PDF..."):
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+        from reportlab.lib import colors
+        import io
+        import matplotlib.pyplot as plt
+        import matplotlib.ticker as mticker
 
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4,
+            rightMargin=inch*0.75, leftMargin=inch*0.75,
+            topMargin=inch*0.75, bottomMargin=inch*0.75)
+
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle('title', fontSize=20, fontName='Helvetica-Bold',
+            spaceAfter=12, textColor=colors.HexColor('#1E40AF'))
+        heading_style = ParagraphStyle('heading', fontSize=14, fontName='Helvetica-Bold',
+            spaceAfter=8, textColor=colors.HexColor('#1E40AF'), spaceBefore=16)
+        normal_style = ParagraphStyle('normal', fontSize=10, fontName='Helvetica',
+            spaceAfter=6, leading=14)
+
+        story = []
+
+        # العنوان
+        story.append(Paragraph("Sales Analysis Report", title_style))
+        story.append(Paragraph(f"Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}", normal_style))
+        story.append(Spacer(1, 0.2*inch))
+
+        # ملخص الأرقام
+        story.append(Paragraph("📊 Key Metrics", heading_style))
+        metrics_data = [
+            ['Metric', 'Value'],
+            ['Total Records', f"{summary['total_records']:,}"],
+            ['Date Range', summary.get('date_range', 'N/A')],
+            ['Total Sales', f"${summary['total_sales']:,.2f}"],
+            ['Avg per Period', f"${summary['avg_weekly_sales']:,.2f}"],
+            ['Best Period', f"${summary['max_single_week']:,.2f}"],
+        ]
+        metrics_table = Table(metrics_data, colWidths=[3*inch, 3*inch])
+        metrics_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E40AF')),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0,0), (-1,-1), 10),
+            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F8FAFC')]),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
+            ('PADDING', (0,0), (-1,-1), 8),
+        ]))
+        story.append(metrics_table)
+        story.append(Spacer(1, 0.2*inch))
+
+        # رسم المبيعات
+        story.append(Paragraph("📈 Sales Trend", heading_style))
+        weekly = df.groupby(date_col)[sales_col].sum().reset_index()
+        fig, ax = plt.subplots(figsize=(7, 3))
+        ax.plot(weekly[date_col], weekly[sales_col], color='#2563EB', linewidth=1, alpha=0.6)
+        weekly['ma4'] = weekly[sales_col].rolling(4).mean()
+        ax.plot(weekly[date_col], weekly['ma4'], color='#DC2626', linewidth=2, label='4-Period Avg')
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(
+            lambda x, p: f'${x/1e6:.1f}M' if x >= 1e6 else f'${x/1e3:.0f}K'))
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        img_buf = io.BytesIO()
+        plt.savefig(img_buf, format='png', dpi=150, bbox_inches='tight')
+        plt.close()
+        img_buf.seek(0)
+        story.append(Image(img_buf, width=6.5*inch, height=2.5*inch))
+        story.append(Spacer(1, 0.2*inch))
+
+        # التوقعات
+        story.append(Paragraph("🔮 Forecast Summary", heading_style))
+        forecast_data = [
+            ['Period', 'Expected Sales'],
+            ['Next 4 Weeks', f"${forecast_summary['next_4_weeks']:,.0f}"],
+            ['Next 8 Weeks', f"${forecast_summary['next_8_weeks']:,.0f}"],
+            ['Next 12 Weeks', f"${forecast_summary['next_12_weeks']:,.0f}"],
+            ['Peak Week', forecast_summary['peak_week']],
+            ['Peak Sales', f"${forecast_summary['peak_expected_sales']:,.0f}"],
+        ]
+        forecast_table = Table(forecast_data, colWidths=[3*inch, 3*inch])
+        forecast_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#16A34A')),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0,0), (-1,-1), 10),
+            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F0FDF4')]),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E2E8F0')),
+            ('PADDING', (0,0), (-1,-1), 8),
+        ]))
+        story.append(forecast_table)
+        story.append(Spacer(1, 0.2*inch))
+
+        # Executive Summary
+        if 'exec_summary' in st.session_state:
+            story.append(Paragraph("🤖 AI Executive Summary", heading_style))
+            clean_text = st.session_state.exec_summary.replace('#', '').replace('*', '')
+            for line in clean_text.split('\n'):
+                if line.strip():
+                    story.append(Paragraph(line.strip(), normal_style))
+
+        doc.build(story)
+        buffer.seek(0)
+
+        st.download_button(
+            label="📄 Download PDF Now",
+            data=buffer,
+            file_name=f"sales_report_{pd.Timestamp.now().strftime('%Y%m%d')}.pdf",
+            mime="application/pdf"
+        )
+     
     # ── Tab 2 ──────────────────────────────────────────
     with tab2:
         import matplotlib.pyplot as plt
