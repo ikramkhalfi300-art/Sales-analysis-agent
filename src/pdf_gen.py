@@ -244,17 +244,17 @@ class ReportCanvas:
         page = doc.page
 
         # Top accent line
-        canvas.setFillColor(C['blue'])
+        canvas.setFillColor('#1b2a4a')
         canvas.rect(MARGIN, PAGE_H - 0.38*inch, CONTENT_W, 2.5, fill=1, stroke=0)
 
         # Footer line
-        canvas.setStrokeColor(C['border'])
+        canvas.setStrokeColor('#dcdde1')
         canvas.setLineWidth(0.4)
         canvas.line(MARGIN, 0.62*inch, PAGE_W - MARGIN, 0.62*inch)
 
         # Footer text
         canvas.setFont('Helvetica', 7.5)
-        canvas.setFillColor(C['gray'])
+        canvas.setFillColor('#7f8c8d')
         canvas.drawString(MARGIN, 0.42*inch, "Confidential Business Analysis Report")
         canvas.drawCentredString(PAGE_W/2, 0.42*inch, f"Page {page}")
         canvas.drawRightString(PAGE_W - MARGIN, 0.42*inch, self.report_date)
@@ -390,10 +390,10 @@ def build_cover(story, company_name, T, S, summary):
     for label, value in meta_items:
         meta_rows.append([
             Paragraph(label.upper(), ParagraphStyle('ml', fontSize=7.5,
-                fontName='Helvetica-Bold', textColor=C['gray'],
+                fontName='Helvetica-Bold', textColor='#57606f',
                 alignment=TA_LEFT, leading=11, tracking=1)),
             Paragraph(value, ParagraphStyle('mv', fontSize=10,
-                fontName='Helvetica', textColor=C['navy'],
+                fontName='Helvetica', textColor='#1b2a4a',
                 alignment=TA_LEFT, leading=14)),
         ])
     meta_tbl = Table(meta_rows, colWidths=[1.6*inch, CONTENT_W-1.6*inch])
@@ -696,7 +696,7 @@ def build_segment_analysis(story, S, store_df, group_col, company_name):
                 fontsize=6.5, color='#374151', fontweight='500')
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(money_fmt))
     ax.set_title(f"Top {len(top10)} {group_col} Segments by Revenue",
-                 fontsize=11, fontweight='bold', color=C['chart1'], pad=12)
+                 fontsize=11, fontweight='bold', color='#2c3e50', pad=12)
     ax.set_xlabel(group_col, fontsize=9)
     ax.legend(fontsize=8, framealpha=0.9)
     ax.spines['left'].set_color('#D1D5DB')
@@ -756,9 +756,9 @@ def build_correlations(story, S, corr_series):
                 f'{val:.4f}', va='center',
                 ha='left' if val >= 0 else 'right',
                 fontsize=8, color='#374151')
-    ax.axvline(x=0, color=C['gray_dark'], linewidth=0.8)
+    ax.axvline(x=0, color='#2c3e50', linewidth=0.8)
     ax.set_title("Correlation Coefficients — External Variables vs Revenue",
-                 fontsize=11, fontweight='bold', color=C['chart1'], pad=12)
+                 fontsize=11, fontweight='bold', color='#2c3e50', pad=12)
     ax.set_xlabel("Pearson Correlation Coefficient", fontsize=9)
     ax.spines['left'].set_color('#D1D5DB')
     ax.spines['bottom'].set_color('#D1D5DB')
