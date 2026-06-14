@@ -249,6 +249,7 @@ if st.session_state.analyzed:
         st.divider()
 
         # ── PDF ──────────────────────────────────────────
+        
         if st.button(T["download_pdf"], type="secondary"):
             with st.spinner(T["generating_pdf"]):
                 from src.pdf_gen import generate_pdf
@@ -293,7 +294,7 @@ if st.session_state.analyzed:
         weekly['ma4'] = weekly[sales_col].rolling(4).mean()
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=weekly[date_col], y=weekly[sales_col],
+        x=weekly[date_col], y=weekly[sales_col],
             fill='tozeroy', fillcolor='rgba(37,99,235,0.08)',
             line=dict(color='#2563EB', width=1.5),
             name='Sales', hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'
