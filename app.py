@@ -31,6 +31,14 @@ st.markdown(f"""
         padding: 4px 14px; font-size: 0.9rem; font-weight: 600;
         margin-bottom: 0.5rem;
     }}
+    .decision-card {{
+        background: #F8FAFC; border-left: 4px solid #1E40AF;
+        padding: 12px 16px; border-radius: 6px; margin-bottom: 8px;
+    }}
+    .kpi-card {{
+        background: white; border: 1px solid #E5E7EB;
+        border-radius: 8px; padding: 16px; text-align: center;
+    }}
     .stApp {{ direction: {direction}; }}
 </style>
 """, unsafe_allow_html=True)
@@ -46,7 +54,6 @@ with st.sidebar:
     )
     st.session_state.company_name = company_name
 
-    # ── فترة التحليل (الخطوة 6) ─────────────────────────
     period_options = {
         "Weekly":    ("W",  12, "week"),
         "Monthly":   ("ME", 6,  "month"),
@@ -68,9 +75,9 @@ with st.sidebar:
     )
     selected_period_key = period_keys[sel_period_idx]
     period_freq, forecast_periods, period_unit = period_options[selected_period_key]
-    st.session_state.period_freq    = period_freq
+    st.session_state.period_freq      = period_freq
     st.session_state.forecast_periods = forecast_periods
-    st.session_state.period_unit    = period_unit
+    st.session_state.period_unit      = period_unit
 
     st.subheader(T["upload_data"])
     uploaded_file = st.file_uploader(T["upload_hint"], type=['csv','xlsx','xls'])
@@ -164,22 +171,64 @@ if analyze_btn and uploaded_file and date_col and sales_col:
                         .rename(columns={'sum':'total','mean':'avg_weekly'})
                         .reset_index().sort_values('total', ascending=False))
 
-        # تجميع حسب الفترة المختارة
         df_period = df.copy()
         df_period['period'] = df_period[date_col].dt.to_period(freq)
         monthly_df = (df_period.groupby('period')[sales_col].sum().reset_index()
                       .rename(columns={sales_col:'total','period':'month'}))
 
-        holiday_df = holiday_vs_normal(df) if 'Holiday_Flag' in df.columns else None
+        holiday_df   = holiday_vs_normal(df) if 'Holiday_Flag' in df.columns else None
         numeric_cols = [c for c in df.select_dtypes(include='number').columns if c != sales_col]
         corr_series  = df[[sales_col]+numeric_cols].corr()[sales_col].drop(sales_col).round(4) if numeric_cols else None
 
-        st.session_state.summary     = summary
-        st.session_state.store_df    = store_df
-        st.session_state.monthly_df  = monthly_df
-        st.session_state.holiday_df  = holiday_df
-        st.session_state.corr_series = corr_series
-        st.session_state.group_col   = group_col
+        # ── KPI ذكية ──────────────────────────────────────
+        df_kpi = df.copy()
+        df_kpi['period'] = df_kpi[date_col].dt.to_period(freq)
+        period_totals = df_kpi.groupby('period')[sales_col].sum().reset_index()
+        period_totals = period_totals.sort_values('period')
+
+        mom_growth = None
+        if len(period_totals) >= 2:
+            last  = period_totals[sales_col].iloc[-1]
+            prev  = period_totals[sales_col].iloc[-2]
+            mom_growth = (last - prev) / prev * 100 if prev > 0 else 0
+
+        # Pareto 80/20
+        pareto_pct = None
+        if group_col and store_df is not None:
+            cumsum = store_df['total'].cumsum()
+            total  = store_df['total'].sum()
+            n80    = (cumsum <= total * 0.8).sum() + 1
+            pareto_pct = round(n80 / len(store_df) * 100, 1)
+
+        # أفضل وأسوأ فترة
+        best_period_label  = str(period_totals.loc[period_totals[sales_col].idxmax(), 'period'])
+        worst_period_label = str(period_totals.loc[period_totals[sales_col].idxmin(), 'period'])
+
+        kpi_data = {
+            'mom_growth':        mom_growth,
+            'pareto_pct':        pareto_pct,
+            'best_period':       best_period_label,
+            'worst_period':      worst_period_label,
+            'period_count':      len(period_totals),
+            'consistency_score': round(1 - period_totals[sales_col].std() / period_totals[sales_col].mean() * 100, 1) if period_totals[sales_col].mean() > 0 else 0,
+        }
+
+        # ── Decision Board ────────────────────────────────
+        from src.decision_engine import generate_decisions, decisions_to_df, get_summary_stats
+        decisions     = generate_decisions(df, date_col, sales_col, group_col, lang)
+        decisions_df  = decisions_to_df(decisions, lang)
+        decision_stats= get_summary_stats(decisions)
+
+        st.session_state.summary        = summary
+        st.session_state.store_df       = store_df
+        st.session_state.monthly_df     = monthly_df
+        st.session_state.holiday_df     = holiday_df
+        st.session_state.corr_series    = corr_series
+        st.session_state.group_col      = group_col
+        st.session_state.kpi_data       = kpi_data
+        st.session_state.decisions      = decisions
+        st.session_state.decisions_df   = decisions_df
+        st.session_state.decision_stats = decision_stats
 
     with st.spinner("🔮 " + ("Forecasting..." if lang=="en" else "جاري التنبؤ..." if lang=="ar" else "Prévision...")):
         from src.forecaster import train_and_forecast, get_forecast_summary
@@ -190,7 +239,7 @@ if analyze_btn and uploaded_file and date_col and sales_col:
         st.session_state.prophet_data     = prophet_data
         st.session_state.forecast_summary = forecast_summary
 
-    with st.spinner("🤖 " + ("Building Agent..." if lang=="en" else "بناء الوكيل..." if lang=="ar" else "Construction...")):
+    with st.spinner("🤖 " + ("Building..." if lang=="en" else "بناء..." if lang=="ar" else "Construction...")):
         from src.agent import build_system_prompt
         system_prompt = build_system_prompt(
             st.session_state.summary, st.session_state.store_df,
@@ -213,11 +262,20 @@ if st.session_state.analyzed:
     forecast_summary = st.session_state.forecast_summary
     T                = get_translations(lang)
     cname            = st.session_state.get("company_name","").strip()
+    kpi_data         = st.session_state.get('kpi_data', {})
+    decision_stats   = st.session_state.get('decision_stats', {})
 
     if cname:
         st.markdown(f'<span class="company-badge">🏢 {cname}</span>', unsafe_allow_html=True)
 
-    tab1, tab2, tab3, tab4 = st.tabs([T["tab_overview"], T["tab_charts"], T["tab_forecast"], T["tab_agent"]])
+    # ── 5 Tabs ─────────────────────────────────────────────
+    tab_labels = {
+        "en": ["📊 Overview", "🎯 Decision Board", "📈 Charts", "🔮 Forecast", "💬 Performance Overview"],
+        "ar": ["📊 نظرة عامة", "🎯 لوحة القرارات", "📈 الرسوم", "🔮 التوقعات", "💬 نظرة الأداء"],
+        "fr": ["📊 Vue d'ensemble", "🎯 Tableau de Décision", "📈 Graphiques", "🔮 Prévisions", "💬 Aperçu Performance"],
+    }
+    tabs = st.tabs(tab_labels.get(lang, tab_labels["en"]))
+    tab1, tab_dec, tab2, tab3, tab4 = tabs
 
     # ── Tab 1: Overview ────────────────────────────────────
     with tab1:
@@ -227,6 +285,37 @@ if st.session_state.analyzed:
         with col2: st.metric(T["total_sales"],   f"${summary['total_sales']:,.0f}")
         with col3: st.metric(T["avg_period"],    f"${summary['avg_weekly_sales']:,.0f}")
         with col4: st.metric(T["best_period"],   f"${summary['max_single_week']:,.0f}")
+
+        # ── KPI ذكية ──────────────────────────────────────
+        st.divider()
+        kpi_title = {"en":"📊 Smart KPIs","ar":"📊 مؤشرات ذكية","fr":"📊 KPIs Intelligents"}
+        st.subheader(kpi_title.get(lang,"📊 Smart KPIs"))
+
+        k1,k2,k3,k4 = st.columns(4)
+        with k1:
+            if kpi_data.get('mom_growth') is not None:
+                delta_color = "normal" if kpi_data['mom_growth'] >= 0 else "inverse"
+                st.metric(
+                    "MoM Growth" if lang=="en" else "نمو شهر/شهر" if lang=="ar" else "Croissance MoM",
+                    f"{kpi_data['mom_growth']:+.1f}%",
+                    delta=f"{kpi_data['mom_growth']:+.1f}%"
+                )
+        with k2:
+            if kpi_data.get('pareto_pct'):
+                st.metric(
+                    "80% Revenue from" if lang=="en" else "80% الإيراد من" if lang=="ar" else "80% Revenu par",
+                    f"Top {kpi_data['pareto_pct']:.0f}% units"
+                )
+        with k3:
+            st.metric(
+                "Best Period" if lang=="en" else "أفضل فترة" if lang=="ar" else "Meilleure Période",
+                kpi_data.get('best_period','N/A')
+            )
+        with k4:
+            st.metric(
+                "Worst Period" if lang=="en" else "أسوأ فترة" if lang=="ar" else "Pire Période",
+                kpi_data.get('worst_period','N/A')
+            )
 
         st.divider()
         st.subheader(T["ai_analysis"])
@@ -248,8 +337,6 @@ if st.session_state.analyzed:
 
         st.divider()
 
-        # ── PDF ──────────────────────────────────────────
-        
         if st.button(T["download_pdf"], type="secondary"):
             with st.spinner(T["generating_pdf"]):
                 from src.pdf_gen import generate_pdf
@@ -280,21 +367,110 @@ if st.session_state.analyzed:
             st.subheader(f"{T['performance_by']} {st.session_state.group_col}")
             st.dataframe(st.session_state.store_df, use_container_width=True)
 
-    # ── Tab 2: Charts (Plotly - الخطوة 5) ─────────────────
+    # ── Tab 2: Decision Board ──────────────────────────────
+    with tab_dec:
+        dec_titles = {
+            "en": "🎯 Decision Board",
+            "ar": "🎯 لوحة القرارات",
+            "fr": "🎯 Tableau de Décision",
+        }
+        st.subheader(dec_titles.get(lang,"🎯 Decision Board"))
+
+        # ملخص القرارات
+        if decision_stats:
+            c1,c2,c3,c4 = st.columns(4)
+            with c1:
+                st.metric(
+                    "✅ Invest" if lang=="en" else "✅ استثمر" if lang=="ar" else "✅ Investir",
+                    decision_stats.get('invest',0)
+                )
+            with c2:
+                st.metric(
+                    "👁️ Monitor" if lang=="en" else "👁️ راقب" if lang=="ar" else "👁️ Surveiller",
+                    decision_stats.get('monitor',0)
+                )
+            with c3:
+                st.metric(
+                    "🔧 Restructure" if lang=="en" else "🔧 أعد الهيكلة" if lang=="ar" else "🔧 Restructurer",
+                    decision_stats.get('restructure',0)
+                )
+            with c4:
+                st.metric(
+                    "🔴 Critical" if lang=="en" else "🔴 حرج" if lang=="ar" else "🔴 Critique",
+                    decision_stats.get('critical_count',0)
+                )
+
+            if decision_stats.get('critical_units'):
+                critical_label = {
+                    "en": f"⚠️ Units requiring immediate attention: **{', '.join(decision_stats['critical_units'])}**",
+                    "ar": f"⚠️ وحدات تحتاج تدخل فوري: **{', '.join(decision_stats['critical_units'])}**",
+                    "fr": f"⚠️ Unités nécessitant une action immédiate : **{', '.join(decision_stats['critical_units'])}**",
+                }
+                st.warning(critical_label.get(lang, critical_label["en"]))
+
+            impact_label = {
+                "en": f"💰 Total estimated financial impact: **${decision_stats.get('total_impact',0):,.0f}**",
+                "ar": f"💰 إجمالي الأثر المالي المقدر: **${decision_stats.get('total_impact',0):,.0f}**",
+                "fr": f"💰 Impact financier total estimé : **${decision_stats.get('total_impact',0):,.0f}**",
+            }
+            st.info(impact_label.get(lang, impact_label["en"]))
+
+        st.divider()
+
+        # فلتر
+        if st.session_state.decisions_df is not None and len(st.session_state.decisions_df) > 0:
+            decisions_df = st.session_state.decisions_df
+
+            filter_label = {"en":"Filter by rating:","ar":"فلتر حسب التقييم:","fr":"Filtrer par note:"}
+            all_label    = {"en":"All","ar":"الكل","fr":"Tout"}
+            rating_filter = st.radio(
+                filter_label.get(lang,"Filter:"),
+                [all_label.get(lang,"All"), "🟢", "🟡", "🔴"],
+                horizontal=True
+            )
+
+            rating_col = decisions_df.columns[0]  # عمود التقييم دائماً الأول
+            if rating_filter != all_label.get(lang,"All"):
+                filtered_df = decisions_df[decisions_df[rating_col] == rating_filter]
+            else:
+                filtered_df = decisions_df
+
+            st.dataframe(
+                filtered_df,
+                use_container_width=True,
+                hide_index=True,
+                height=min(600, 50 + len(filtered_df) * 38)
+            )
+
+            # تنزيل القرارات كـ CSV
+            csv_label = {"en":"📥 Download Decisions CSV","ar":"📥 تنزيل القرارات CSV","fr":"📥 Télécharger CSV"}
+            st.download_button(
+                csv_label.get(lang, csv_label["en"]),
+                data=filtered_df.to_csv(index=False),
+                file_name=f"decisions_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+        else:
+            no_group = {
+                "en": "Decision Board requires a group column (Store, Branch, Region...) in your data.",
+                "ar": "لوحة القرارات تحتاج عمود تجميع (متجر، فرع، منطقة...) في بياناتك.",
+                "fr": "Le tableau de décision nécessite une colonne de groupe (Magasin, Branche...) dans vos données.",
+            }
+            st.info(no_group.get(lang, no_group["en"]))
+
+    # ── Tab 3: Charts ──────────────────────────────────────
     with tab2:
         import plotly.express as px
         import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
 
         period_unit = st.session_state.get('period_unit','week')
 
-        # رسم اتجاه المبيعات
         st.subheader(T["sales_trend"])
         weekly = df.groupby(date_col)[sales_col].sum().reset_index().sort_values(date_col)
         weekly['ma4'] = weekly[sales_col].rolling(4).mean()
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-        x=weekly[date_col], y=weekly[sales_col],
+            x=weekly[date_col], y=weekly[sales_col],
             fill='tozeroy', fillcolor='rgba(37,99,235,0.08)',
             line=dict(color='#2563EB', width=1.5),
             name='Sales', hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'
@@ -315,7 +491,6 @@ if st.session_state.analyzed:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # رسم الفترة المختارة (شهري/أسبوعي/ربعي/سنوي)
         st.subheader(T["monthly_sales"])
         monthly_df = st.session_state.monthly_df
         months_str = [str(m) for m in monthly_df['month']]
@@ -324,8 +499,7 @@ if st.session_state.analyzed:
                       else '#D97706' if v >= pd.Series(vals).quantile(0.3)
                       else '#DC2626' for v in vals]
         fig2 = go.Figure(go.Bar(
-            x=months_str, y=vals,
-            marker_color=bar_colors,
+            x=months_str, y=vals, marker_color=bar_colors,
             text=[f'${v/1e6:.1f}M' if v>=1e6 else f'${v/1e3:.0f}K' for v in vals],
             textposition='outside',
             hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'
@@ -333,12 +507,10 @@ if st.session_state.analyzed:
         fig2.update_layout(
             title=chart_title(T["monthly_sales"]),
             height=400, yaxis=dict(tickprefix='$', tickformat=',.0f'),
-            plot_bgcolor='white', paper_bgcolor='white',
-            yaxis_gridcolor='#F3F4F6'
+            plot_bgcolor='white', paper_bgcolor='white', yaxis_gridcolor='#F3F4F6'
         )
         st.plotly_chart(fig2, use_container_width=True)
 
-        # رسم المتاجر
         if st.session_state.store_df is not None:
             group_col = st.session_state.group_col
             store_df  = st.session_state.store_df
@@ -349,17 +521,15 @@ if st.session_state.analyzed:
                 marker_color='#2563EB', opacity=0.85,
                 text=[f'${v/1e6:.1f}M' if v>=1e6 else f'${v/1e3:.0f}K' for v in top10['total']],
                 textposition='outside',
-                hovertemplate=f'{group_col}: %{{x}}<br>Total: $%{{y:,.0f}}<extra></extra>'
+                hovertemplate=f'{group_col}: %{{x}}<br>$%{{y:,.0f}}<extra></extra>'
             ))
             fig3.update_layout(
                 title=chart_title(f"{T['sales_by']} {group_col}"),
                 height=400, yaxis=dict(tickprefix='$', tickformat=',.0f'),
-                plot_bgcolor='white', paper_bgcolor='white',
-                yaxis_gridcolor='#F3F4F6'
+                plot_bgcolor='white', paper_bgcolor='white', yaxis_gridcolor='#F3F4F6'
             )
             st.plotly_chart(fig3, use_container_width=True)
 
-        # رسم الارتباط
         if st.session_state.corr_series is not None:
             st.subheader(T["correlation"])
             corr = st.session_state.corr_series
@@ -372,13 +542,12 @@ if st.session_state.analyzed:
             ))
             fig4.update_layout(
                 title=chart_title(T["correlation"]),
-                height=350, plot_bgcolor='white', paper_bgcolor='white',
-                xaxis_gridcolor='#F3F4F6'
+                height=350, plot_bgcolor='white', paper_bgcolor='white', xaxis_gridcolor='#F3F4F6'
             )
             fig4.add_vline(x=0, line_color='black', line_width=0.8)
             st.plotly_chart(fig4, use_container_width=True)
 
-    # ── Tab 3: Forecast (Plotly) ───────────────────────────
+    # ── Tab 4: Forecast ────────────────────────────────────
     with tab3:
         import plotly.graph_objects as go
         st.subheader(T["forecast_title"])
@@ -395,8 +564,7 @@ if st.session_state.analyzed:
         fig5 = go.Figure()
         fig5.add_trace(go.Scatter(
             x=prophet_data['ds'], y=prophet_data['y'],
-            line=dict(color='#2563EB', width=1.5),
-            name=T["historical"],
+            line=dict(color='#2563EB', width=1.5), name=T["historical"],
             hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'
         ))
         fig5.add_trace(go.Scatter(
@@ -411,11 +579,9 @@ if st.session_state.analyzed:
         ))
         fig5.add_trace(go.Scatter(
             x=future['ds'], y=future['yhat'],
-            line=dict(color='#DC2626', width=2.5, dash='dash'),
-            name=T["forecast_label"],
+            line=dict(color='#DC2626', width=2.5, dash='dash'), name=T["forecast_label"],
             hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'
         ))
-        # خط فاصل
         fig5.add_vline(
             x=prophet_data['ds'].max(), line_color='gray',
             line_width=1, line_dash='dot',
@@ -432,28 +598,48 @@ if st.session_state.analyzed:
         st.plotly_chart(fig5, use_container_width=True)
         st.info(f"{T['peak_info']} **{forecast_summary['peak_week']}** → **${forecast_summary['peak_expected_sales']:,.0f}**")
 
-    # ── Tab 4: AI Agent (Streaming - الخطوة 7) ─────────────
+    # ── Tab 5: Performance Overview (بدل AI Agent) ─────────
     with tab4:
-        st.subheader(T["agent_title"])
-        st.caption(T["agent_caption"])
+        perf_titles = {
+            "en": "💬 Performance Overview",
+            "ar": "💬 نظرة الأداء",
+            "fr": "💬 Aperçu Performance",
+        }
+        st.subheader(perf_titles.get(lang,"💬 Performance Overview"))
+
+        captions = {
+            "en": "Ask anything about your sales data — get instant insights",
+            "ar": "اسأل أي شيء عن بيانات مبيعاتك — احصل على رؤى فورية",
+            "fr": "Posez n'importe quelle question sur vos données de ventes",
+        }
+        st.caption(captions.get(lang, captions["en"]))
 
         for message in st.session_state.chat_history:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
         if len(st.session_state.chat_history) == 0:
-            with st.spinner(T["initial_analysis"]):
+            init_labels = {
+                "en": "🔍 Generating performance overview...",
+                "ar": "🔍 جاري توليد نظرة الأداء...",
+                "fr": "🔍 Génération de l'aperçu performance...",
+            }
+            with st.spinner(init_labels.get(lang, init_labels["en"])):
                 from src.agent import ask_agent
                 answer, history = ask_agent(T["auto_question"], st.session_state.system_prompt, [])
                 st.session_state.chat_history = history
                 st.rerun()
 
-        if question := st.chat_input(T["chat_placeholder"]):
+        placeholders = {
+            "en": "Ask about your sales data...",
+            "ar": "اسأل عن بيانات مبيعاتك...",
+            "fr": "Posez une question sur vos données...",
+        }
+        if question := st.chat_input(placeholders.get(lang, placeholders["en"])):
             from src.agent import stream_agent
             with st.chat_message("user"):
                 st.markdown(question)
             with st.chat_message("assistant"):
-                # Streaming — كلمة كلمة مثل ChatGPT
                 response_placeholder = st.empty()
                 full_response = ""
                 for chunk in stream_agent(question, st.session_state.system_prompt, st.session_state.chat_history):
