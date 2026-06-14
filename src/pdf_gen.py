@@ -521,6 +521,28 @@ def build_forecast(story, T, ST, forecast, prophet_data, forecast_summary, compa
 
 
 # ── صفحة التحليل AI ───────────────────────────────────────
+def _md_to_rl(text):
+    """
+    يحوّل Markdown inline إلى ReportLab XML:
+    **bold** → <b>bold</b>
+    *italic* → <i>italic</i>
+    `code`   → <font name="Courier">code</font>
+    يزيل أي رموز متبقية
+    """
+    import re
+    # أزل ### ## # في بداية السطر (تُعالج خارجياً)
+    text = re.sub(r'^#{1,4}\s*', '', text)
+    # **bold**
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    # *italic*
+    text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+    # `code`
+    text = re.sub(r'`(.+?)`', r'<font name="Courier">\1</font>', text)
+    # escape & < > (ما كانت جزء من تاغات)
+    # نحافظ على التاغات الموجودة
+    return text
+
+
 def build_ai_section(story, T, ST, ai_result, ai_type):
     story.append(Paragraph(f"🤖 {T.get('pdf_ai_section','AI Analysis')}", ST['h1']))
     story.append(HRFlowable(width="100%", thickness=1.5, color=BLUE))
@@ -528,20 +550,124 @@ def build_ai_section(story, T, ST, ai_result, ai_type):
     story.append(Paragraph(f"<i>{ai_type}</i>", ST['body_small']))
     story.append(Spacer(1, 0.1*inch))
 
-    clean = ai_result.replace('*','')
-    for line in clean.split('\n'):
-        line = line.strip()
-        if not line:
-            story.append(Spacer(1, 0.05*inch))
+    import re
+
+    # Style خاص لصناديق الـ Confidence
+    confidence_style = ParagraphStyle('conf',
+        fontSize=9, fontName='Helvetica-Bold',
+        textColor=colors.HexColor('#1E40AF'),
+        backColor=colors.HexColor('#EFF6FF'),
+        borderPad=5, leading=13, spaceAfter=4,
+        leftIndent=8
+    )
+    alert_style = ParagraphStyle('alert',
+        fontSize=9, fontName='Helvetica-Bold',
+        textColor=colors.HexColor('#DC2626'),
+        backColor=colors.HexColor('#FEF2F2'),
+        borderPad=5, leading=13, spaceAfter=4,
+        leftIndent=8
+    )
+    money_style = ParagraphStyle('money',
+        fontSize=9, fontName='Helvetica-Bold',
+        textColor=colors.HexColor('#16A34A'),
+        backColor=colors.HexColor('#F0FDF4'),
+        borderPad=5, leading=13, spaceAfter=4,
+        leftIndent=8
+    )
+
+    for line in ai_result.split('\n'):
+        raw = line.strip()
+        if not raw:
+            story.append(Spacer(1, 0.06*inch))
             continue
-        if line.startswith('## '):
-            story.append(Paragraph(line[3:], ST['h2']))
-        elif line.startswith('# '):
-            story.append(Paragraph(line[2:], ST['h1']))
-        elif line.startswith('- ') or line.startswith('• '):
-            story.append(Paragraph(f"• {line[2:]}", ST['insight']))
+
+        # ── عناوين H1 # و H2 ## و H3 ###
+        if raw.startswith('### '):
+            txt = _md_to_rl(raw[4:])
+            story.append(Paragraph(txt, ST['h2']))
+
+        elif raw.startswith('## '):
+            txt = _md_to_rl(raw[3:])
+            story.append(Paragraph(txt, ST['h2']))
+
+        elif raw.startswith('# '):
+            txt = _md_to_rl(raw[2:])
+            story.append(Paragraph(txt, ST['h1']))
+
+        # ── خط فاصل ---
+        elif re.match(r'^-{3,}$', raw):
+            story.append(Spacer(1, 0.05*inch))
+            story.append(HRFlowable(width="100%", thickness=0.5,
+                                    color=colors.HexColor('#E5E7EB')))
+            story.append(Spacer(1, 0.05*inch))
+
+        # ── نقاط القائمة - و •
+        elif raw.startswith('- ') or raw.startswith('• '):
+            content = raw[2:]
+            txt = _md_to_rl(content)
+            # Confidence → صندوق أزرق
+            if '🎯' in txt or 'Confidence' in txt or 'مستوى الثقة' in txt:
+                story.append(Paragraph(f"🎯 {txt}", confidence_style))
+            # تحذير → صندوق أحمر
+            elif '🚨' in txt or '⚠️' in txt or 'CRITICAL' in txt:
+                story.append(Paragraph(f"• {txt}", alert_style))
+            # مالي → صندوق أخضر
+            elif '💰' in txt or '$' in txt:
+                story.append(Paragraph(f"• {txt}", money_style))
+            else:
+                story.append(Paragraph(f"• {txt}", ST['insight']))
+
+        # ── أسطر مرقمة 1. 2. 3.
+        elif re.match(r'^\d+\.\s', raw):
+            txt = _md_to_rl(raw)
+            story.append(Paragraph(txt, ST['insight']))
+
+        # ── جداول Markdown | col | col |
+        elif raw.startswith('|') and raw.endswith('|'):
+            # تجاهل سطر الفواصل |---|---|
+            if re.match(r'^\|[\s\-\|]+\|$', raw):
+                continue
+            cells = [c.strip() for c in raw.strip('|').split('|')]
+            # نبنيه كـ table بسيط
+            if not hasattr(build_ai_section, '_table_rows'):
+                build_ai_section._table_rows = []
+            build_ai_section._table_rows.append(cells)
+            continue
+
+        # ── نص عادي
         else:
-            story.append(Paragraph(line, ST['body']))
+            txt = _md_to_rl(raw)
+            # Confidence inline في نص عادي
+            if '🎯' in txt:
+                story.append(Paragraph(txt, confidence_style))
+            elif '💰' in txt or ('$' in txt and len(txt) < 120):
+                story.append(Paragraph(txt, money_style))
+            elif '🚨' in txt or '⚠️' in txt:
+                story.append(Paragraph(txt, alert_style))
+            else:
+                story.append(Paragraph(txt, ST['body']))
+
+        # ── flush الجدول المتراكم
+        if hasattr(build_ai_section, '_table_rows') and build_ai_section._table_rows:
+            rows = build_ai_section._table_rows
+            del build_ai_section._table_rows
+            if rows:
+                n_cols = max(len(r) for r in rows)
+                col_w  = (PAGE_W - 1.5*inch) / n_cols
+                tbl = Table(rows, colWidths=[col_w]*n_cols)
+                tbl.setStyle(TableStyle([
+                    ('BACKGROUND',  (0,0), (-1,0),  BLUE),
+                    ('TEXTCOLOR',   (0,0), (-1,0),  WHITE),
+                    ('FONTNAME',    (0,0), (-1,0),  'Helvetica-Bold'),
+                    ('FONTNAME',    (0,1), (-1,-1), 'Helvetica'),
+                    ('FONTSIZE',    (0,0), (-1,-1), 8),
+                    ('ROWBACKGROUNDS',(0,1),(-1,-1),[WHITE, GRAY_LIGHT]),
+                    ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#E5E7EB')),
+                    ('PADDING',     (0,0), (-1,-1), 5),
+                    ('ALIGN',       (0,0), (-1,-1), 'LEFT'),
+                ]))
+                story.append(tbl)
+                story.append(Spacer(1, 0.1*inch))
 
 
 # ── الدالة الرئيسية ───────────────────────────────────────
