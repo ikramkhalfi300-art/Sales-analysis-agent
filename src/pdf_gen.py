@@ -424,14 +424,16 @@ def build_toc(story, S, has_store, has_corr):
     ]
     pg = 7
     if has_store:
-        sections.append((f"{pg:02d}", "Segment Performance Analysis", str(pg))); pg+=1
+        sections.append((f"{pg:02d}", "Segment Performance Analysis", str(pg)))
+        pg+=1
     if has_corr:
-        sections.append((f"{pg:02d}", "External Factors & Correlations", str(pg))); pg+=1
-    sections += [
-        (f"{pg:02d}",   "Revenue Forecast",                str(pg)); pg+=1
-        (f"{pg:02d}",   "Strategic Recommendations",       str(pg)); pg+=1
-        (f"{pg:02d}",   "Appendix — Data Overview",        str(pg))
-    ]
+        sections.append((f"{pg:02d}", "External Factors & Correlations", str(pg)))
+        pg+=1
+    sections.append((f"{pg:02d}",   "Revenue Forecast",                str(pg)))
+    pg+=1
+    sections.append((f"{pg:02d}",   "Strategic Recommendations",       str(pg)))
+    pg+=1
+    sections.append((f"{pg:02d}",   "Appendix — Data Overview",        str(pg)))
 
     for num, title, page in sections:
         row_data = [[
