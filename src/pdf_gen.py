@@ -1,3 +1,4 @@
+# src/pdf_gen.py
 """
 Premium Business Intelligence Report Generator
 Professional consulting-grade PDF — No AI branding
@@ -26,30 +27,29 @@ from reportlab.pdfbase         import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 # ── Corporate Color Palette ──────────────────────────────
-C = {
-    'navy':        colors.HexColor('#0A1628'),
-    'navy_mid':    colors.HexColor('#1B2E4B'),
-    'blue':        colors.HexColor('#1A3A6B'),
-    'blue_mid':    colors.HexColor('#2557A7'),
-    'blue_light':  colors.HexColor('#E8EFF8'),
-    'blue_pale':   colors.HexColor('#F2F6FB'),
-    'teal':        colors.HexColor('#0D7377'),
-    'teal_light':  colors.HexColor('#E6F4F4'),
-    'green':       colors.HexColor('#1A6B3A'),
-    'green_light': colors.HexColor('#E8F4EC'),
-    'amber':       colors.HexColor('#92400E'),
-    'amber_light': colors.HexColor('#FEF3C7'),
-    'red':         colors.HexColor('#7F1D1D'),
-    'red_light':   colors.HexColor('#FEF2F2'),
-    'gray_dark':   colors.HexColor('#1F2937'),
-    'gray_mid':    colors.HexColor('#4B5563'),
-    'gray':        colors.HexColor('#6B7280'),
-    'gray_light':  colors.HexColor('#F3F4F6'),
-    'gray_pale':   colors.HexColor('#F9FAFB'),
-    'border':      colors.HexColor('#D1D5DB'),
-    'white':       colors.white,
-    'black':       colors.black,
-    # Chart palette
+# CH = hex strings for Matplotlib
+# C  = ReportLab color objects (auto-converted from CH)
+CH = {
+    'navy':        '#1B2E4B',
+    'navy_dark':   '#0A1628',
+    'blue':        '#1A3A6B',
+    'blue_mid':    '#2557A7',
+    'blue_light':  '#E8EFF8',
+    'blue_pale':   '#F2F6FB',
+    'teal':        '#0D7377',
+    'teal_light':  '#E6F4F4',
+    'green':       '#1A6B3A',
+    'green_light': '#E8F4EC',
+    'amber':       '#92400E',
+    'amber_light': '#FEF3C7',
+    'red':         '#7F1D1D',
+    'red_light':   '#FEF2F2',
+    'gray_dark':   '#1F2937',
+    'gray_mid':    '#4B5563',
+    'gray':        '#6B7280',
+    'gray_light':  '#F3F4F6',
+    'gray_pale':   '#F9FAFB',
+    'border':      '#D1D5DB',
     'chart1':      '#1A3A6B',
     'chart2':      '#2557A7',
     'chart3':      '#0D7377',
@@ -59,6 +59,18 @@ C = {
     'chart_pos':   '#1A6B3A',
     'chart_neu':   '#2557A7',
 }
+C = {k: colors.HexColor(v) for k, v in CH.items()}
+C['white'] = colors.white
+C['black'] = colors.black
+
+def rl(key):
+    """Get ReportLab color object — always safe for ReportLab contexts"""
+    return C.get(key, colors.HexColor('#1A3A6B'))
+
+def mpl(key):
+    """Get hex string — always safe for Matplotlib contexts"""
+    return CH.get(key, '#1A3A6B')
+
 
 PAGE_W, PAGE_H = A4
 MARGIN = 0.85 * inch
@@ -110,124 +122,124 @@ def build_styles():
     # Cover
     S['cover_eyebrow'] = ParagraphStyle('cover_eyebrow',
         fontSize=9, fontName='Helvetica',
-        textColor=C['blue_mid'], alignment=TA_CENTER,
+        textColor=CH['blue_mid'], alignment=TA_CENTER,
         spaceAfter=6, tracking=2)
 
     S['cover_title'] = ParagraphStyle('cover_title',
         fontSize=28, fontName='Helvetica-Bold',
-        textColor=C['navy'], alignment=TA_CENTER,
+        textColor=CH['navy'], alignment=TA_CENTER,
         spaceAfter=10, leading=34)
 
     S['cover_subtitle'] = ParagraphStyle('cover_subtitle',
         fontSize=14, fontName='Helvetica',
-        textColor=C['gray_mid'], alignment=TA_CENTER,
+        textColor=CH['gray_mid'], alignment=TA_CENTER,
         spaceAfter=6, leading=20)
 
     S['cover_meta'] = ParagraphStyle('cover_meta',
         fontSize=9, fontName='Helvetica',
-        textColor=C['gray'], alignment=TA_CENTER,
+        textColor=CH['gray'], alignment=TA_CENTER,
         spaceAfter=4, leading=14)
 
     # Section headers
     S['section_label'] = ParagraphStyle('section_label',
         fontSize=8, fontName='Helvetica-Bold',
-        textColor=C['blue_mid'], alignment=TA_LEFT,
+        textColor=CH['blue_mid'], alignment=TA_LEFT,
         spaceAfter=4, spaceBefore=20,
         leading=12, tracking=1.5)
 
     S['h1'] = ParagraphStyle('h1',
         fontSize=18, fontName='Helvetica-Bold',
-        textColor=C['navy'], alignment=TA_LEFT,
+        textColor=CH['navy'], alignment=TA_LEFT,
         spaceAfter=6, spaceBefore=4, leading=22)
 
     S['h2'] = ParagraphStyle('h2',
         fontSize=13, fontName='Helvetica-Bold',
-        textColor=C['blue'], alignment=TA_LEFT,
+        textColor=CH['blue'], alignment=TA_LEFT,
         spaceAfter=6, spaceBefore=14, leading=17)
 
     S['h3'] = ParagraphStyle('h3',
         fontSize=11, fontName='Helvetica-Bold',
-        textColor=C['gray_dark'], alignment=TA_LEFT,
+        textColor=CH['gray_dark'], alignment=TA_LEFT,
         spaceAfter=4, spaceBefore=10, leading=15)
 
     # Body
     S['body'] = ParagraphStyle('body',
         fontSize=10, fontName='Helvetica',
-        textColor=C['gray_dark'], alignment=TA_JUSTIFY,
+        textColor=CH['gray_dark'], alignment=TA_JUSTIFY,
         spaceAfter=6, leading=16)
 
     S['body_small'] = ParagraphStyle('body_small',
         fontSize=9, fontName='Helvetica',
-        textColor=C['gray_mid'], alignment=TA_LEFT,
+        textColor=CH['gray_mid'], alignment=TA_LEFT,
         spaceAfter=4, leading=13)
 
     S['body_bold'] = ParagraphStyle('body_bold',
         fontSize=10, fontName='Helvetica-Bold',
-        textColor=C['gray_dark'], alignment=TA_LEFT,
+        textColor=CH['gray_dark'], alignment=TA_LEFT,
         spaceAfter=4, leading=15)
 
     # Callout boxes
     S['callout_blue'] = ParagraphStyle('callout_blue',
         fontSize=10, fontName='Helvetica',
-        textColor=C['blue'], alignment=TA_LEFT,
+        textColor=CH['blue'], alignment=TA_LEFT,
         spaceAfter=4, leading=15,
         leftIndent=12, borderPad=8)
 
     S['callout_green'] = ParagraphStyle('callout_green',
         fontSize=10, fontName='Helvetica',
-        textColor=C['green'], alignment=TA_LEFT,
+        textColor=CH['green'], alignment=TA_LEFT,
         spaceAfter=4, leading=15,
         leftIndent=12, borderPad=8)
 
     S['callout_amber'] = ParagraphStyle('callout_amber',
         fontSize=10, fontName='Helvetica',
-        textColor=C['amber'], alignment=TA_LEFT,
+        textColor=CH['amber'], alignment=TA_LEFT,
         spaceAfter=4, leading=15,
         leftIndent=12, borderPad=8)
 
     S['callout_red'] = ParagraphStyle('callout_red',
         fontSize=10, fontName='Helvetica',
-        textColor=C['red'], alignment=TA_LEFT,
+        textColor=CH['red'], alignment=TA_LEFT,
         spaceAfter=4, leading=15,
         leftIndent=12, borderPad=8)
 
     S['bullet'] = ParagraphStyle('bullet',
         fontSize=10, fontName='Helvetica',
-        textColor=C['gray_dark'], alignment=TA_LEFT,
+        textColor=CH['gray_dark'], alignment=TA_LEFT,
         spaceAfter=4, leading=15,
         leftIndent=14, firstLineIndent=-10)
 
     # TOC
     S['toc_entry'] = ParagraphStyle('toc_entry',
         fontSize=10, fontName='Helvetica',
-        textColor=C['gray_dark'], alignment=TA_LEFT,
+        textColor=CH['gray_dark'], alignment=TA_LEFT,
         spaceAfter=5, leading=15)
 
     S['toc_page'] = ParagraphStyle('toc_page',
         fontSize=10, fontName='Helvetica',
-        textColor=C['blue_mid'], alignment=TA_RIGHT,
+        textColor=CH['blue_mid'], alignment=TA_RIGHT,
         spaceAfter=5, leading=15)
 
     # Metric
     S['metric_value'] = ParagraphStyle('metric_value',
         fontSize=22, fontName='Helvetica-Bold',
-        textColor=C['navy'], alignment=TA_CENTER,
+        textColor=CH['navy'], alignment=TA_CENTER,
         spaceAfter=2, leading=26)
 
     S['metric_label'] = ParagraphStyle('metric_label',
         fontSize=8, fontName='Helvetica',
-        textColor=C['gray'], alignment=TA_CENTER,
+        textColor=CH['gray'], alignment=TA_CENTER,
         spaceAfter=0, leading=11)
 
     S['metric_delta'] = ParagraphStyle('metric_delta',
         fontSize=9, fontName='Helvetica-Bold',
-        textColor=C['teal'], alignment=TA_CENTER,
+        textColor=CH['teal'], alignment=TA_CENTER,
         spaceAfter=0, leading=12)
 
     # Footer
     S['footer'] = ParagraphStyle('footer',
         fontSize=7.5, fontName='Helvetica',
-        textColor=C['gray'], alignment=TA_CENTER, leading=10)
+        textColor=CH['gray'], alignment=TA_CENTER, leading=10)
 
     return S
 
@@ -244,17 +256,17 @@ class ReportCanvas:
         page = doc.page
 
         # Top accent line
-        canvas.setFillColor('#1b2a4a')
+        canvas.setFillColor(CH['blue'])
         canvas.rect(MARGIN, PAGE_H - 0.38*inch, CONTENT_W, 2.5, fill=1, stroke=0)
 
         # Footer line
-        canvas.setStrokeColor('#dcdde1')
+        canvas.setStrokeColor(CH['border'])
         canvas.setLineWidth(0.4)
         canvas.line(MARGIN, 0.62*inch, PAGE_W - MARGIN, 0.62*inch)
 
         # Footer text
         canvas.setFont('Helvetica', 7.5)
-        canvas.setFillColor('#7f8c8d')
+        canvas.setFillColor(CH['gray'])
         canvas.drawString(MARGIN, 0.42*inch, "Confidential Business Analysis Report")
         canvas.drawCentredString(PAGE_W/2, 0.42*inch, f"Page {page}")
         canvas.drawRightString(PAGE_W - MARGIN, 0.42*inch, self.report_date)
@@ -267,21 +279,21 @@ def divider(story, color=None, thickness=0.5, space_before=8, space_after=12):
     story.append(Spacer(1, space_before/72*inch))
     story.append(HRFlowable(
         width="100%", thickness=thickness,
-        color=color or C['border'], spaceAfter=space_after/72*inch
+        color=color or CH['border'], spaceAfter=space_after/72*inch
     ))
 
 def section_header(story, number, title, S):
     story.append(Spacer(1, 0.15*inch))
     story.append(Paragraph(f"SECTION {number}", S['section_label']))
     story.append(Paragraph(title, S['h1']))
-    divider(story, color=C['blue'], thickness=1.2, space_before=2, space_after=14)
+    divider(story, color=CH['blue'], thickness=1.2, space_before=2, space_after=14)
 
 def callout_box(story, text, style='blue', S=None):
     color_map = {
-        'blue':  (C['blue_light'],  C['blue_mid'],  S['callout_blue']),
-        'green': (C['green_light'], C['green'],     S['callout_green']),
-        'amber': (C['amber_light'], C['amber'],     S['callout_amber']),
-        'red':   (C['red_light'],   C['red'],       S['callout_red']),
+        'blue':  (CH['blue_light'],  CH['blue_mid'],  S['callout_blue']),
+        'green': (CH['green_light'], CH['green'],     S['callout_green']),
+        'amber': (CH['amber_light'], CH['amber'],     S['callout_amber']),
+        'red':   (CH['red_light'],   CH['red'],       S['callout_red']),
     }
     bg, border, pstyle = color_map.get(style, color_map['blue'])
     tbl = Table([[Paragraph(text, pstyle)]], colWidths=[CONTENT_W - 0.3*inch])
@@ -307,19 +319,19 @@ def pro_table(story, data, col_widths=None, header=True):
     style = [
         ('FONTNAME',      (0,0),  (-1,-1), 'Helvetica'),
         ('FONTSIZE',      (0,0),  (-1,-1), 9),
-        ('TEXTCOLOR',     (0,0),  (-1,-1), C['gray_dark']),
+        ('TEXTCOLOR',     (0,0),  (-1,-1), CH['gray_dark']),
         ('TOPPADDING',    (0,0),  (-1,-1), 8),
         ('BOTTOMPADDING', (0,0),  (-1,-1), 8),
         ('LEFTPADDING',   (0,0),  (-1,-1), 10),
         ('RIGHTPADDING',  (0,0),  (-1,-1), 10),
-        ('GRID',          (0,0),  (-1,-1), 0.3, C['border']),
+        ('GRID',          (0,0),  (-1,-1), 0.3, CH['border']),
         ('ROWBACKGROUNDS',(0,1),  (-1,-1), [C['white'], C['gray_pale']]),
         ('ALIGN',         (1,0),  (-1,-1), 'RIGHT'),
         ('ALIGN',         (0,0),  (0,-1),  'LEFT'),
     ]
     if header:
         style += [
-            ('BACKGROUND',  (0,0), (-1,0), C['navy']),
+            ('BACKGROUND',  (0,0), (-1,0), CH['navy']),
             ('TEXTCOLOR',   (0,0), (-1,0), C['white']),
             ('FONTNAME',    (0,0), (-1,0), 'Helvetica-Bold'),
             ('FONTSIZE',    (0,0), (-1,0), 9),
@@ -362,7 +374,7 @@ def build_cover(story, company_name, T, S, summary):
     # Top rule
     rule_data = [['']]
     rule_tbl  = Table(rule_data, colWidths=[CONTENT_W], rowHeights=[3])
-    rule_tbl.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1), C['blue'])]))
+    rule_tbl.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1), CH['blue'])]))
     story.append(rule_tbl)
     story.append(Spacer(1, 0.35*inch))
 
@@ -390,10 +402,10 @@ def build_cover(story, company_name, T, S, summary):
     for label, value in meta_items:
         meta_rows.append([
             Paragraph(label.upper(), ParagraphStyle('ml', fontSize=7.5,
-                fontName='Helvetica-Bold', textColor='#57606f',
+                fontName='Helvetica-Bold', textColor=CH['gray'],
                 alignment=TA_LEFT, leading=11, tracking=1)),
             Paragraph(value, ParagraphStyle('mv', fontSize=10,
-                fontName='Helvetica', textColor='#1b2a4a',
+                fontName='Helvetica', textColor=CH['navy'],
                 alignment=TA_LEFT, leading=14)),
         ])
     meta_tbl = Table(meta_rows, colWidths=[1.6*inch, CONTENT_W-1.6*inch])
@@ -402,7 +414,7 @@ def build_cover(story, company_name, T, S, summary):
         ('VALIGN',        (0,0), (-1,-1), 'MIDDLE'),
         ('TOPPADDING',    (0,0), (-1,-1), 6),
         ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-        ('LINEBELOW',     (0,0), (-1,-2), 0.3, C['border']),
+        ('LINEBELOW',     (0,0), (-1,-2), 0.3, CH['border']),
         ('LEFTPADDING',   (0,0), (-1,-1), 0),
         ('RIGHTPADDING',  (0,0), (-1,-1), 0),
     ]))
@@ -414,7 +426,7 @@ def build_cover(story, company_name, T, S, summary):
 def build_toc(story, S, has_store, has_corr):
     story.append(Paragraph("TABLE OF CONTENTS", S['section_label']))
     story.append(Paragraph("Report Structure", S['h1']))
-    divider(story, color=C['blue'], thickness=1.2, space_before=2, space_after=18)
+    divider(story, color=CH['blue'], thickness=1.2, space_before=2, space_after=18)
 
     sections = [
         ("01", "Executive Summary",             "3"),
@@ -424,21 +436,17 @@ def build_toc(story, S, has_store, has_corr):
     ]
     pg = 7
     if has_store:
-        sections.append((f"{pg:02d}", "Segment Performance Analysis", str(pg)))
-        pg+=1
+        sections.append((f"{pg:02d}", "Segment Performance Analysis", str(pg))); pg+=1
     if has_corr:
-        sections.append((f"{pg:02d}", "External Factors & Correlations", str(pg)))
-        pg+=1
-    sections.append((f"{pg:02d}",   "Revenue Forecast",                str(pg)))
-    pg+=1
-    sections.append((f"{pg:02d}",   "Strategic Recommendations",       str(pg)))
-    pg+=1
-    sections.append((f"{pg:02d}",   "Appendix — Data Overview",        str(pg)))
+        sections.append((f"{pg:02d}", "External Factors & Correlations", str(pg))); pg+=1
+    sections.append((f"{pg:02d}", "Revenue Forecast",           str(pg))); pg+=1
+    sections.append((f"{pg:02d}", "Strategic Recommendations",  str(pg))); pg+=1
+    sections.append((f"{pg:02d}", "Appendix — Data Overview",   str(pg)))
 
     for num, title, page in sections:
         row_data = [[
             Paragraph(f"<b>{num}</b>", ParagraphStyle('tn', fontSize=9,
-                fontName='Helvetica-Bold', textColor=C['blue_mid'],
+                fontName='Helvetica-Bold', textColor=CH['blue_mid'],
                 alignment=TA_LEFT, leading=13)),
             Paragraph(title, S['toc_entry']),
             Paragraph(page,  S['toc_page']),
@@ -449,7 +457,7 @@ def build_toc(story, S, has_store, has_corr):
             ('VALIGN',        (0,0), (-1,-1), 'MIDDLE'),
             ('TOPPADDING',    (0,0), (-1,-1), 7),
             ('BOTTOMPADDING', (0,0), (-1,-1), 7),
-            ('LINEBELOW',     (0,0), (-1,-1), 0.25, C['border']),
+            ('LINEBELOW',     (0,0), (-1,-1), 0.25, CH['border']),
             ('LEFTPADDING',   (0,0), (-1,-1), 4),
         ]))
         story.append(row_tbl)
@@ -496,15 +504,15 @@ def build_executive_summary(story, S, summary, forecast_summary, ai_result=None)
     col_w = CONTENT_W / 4
     m_tbl = Table(metrics, colWidths=[col_w]*4, rowHeights=[0.48*inch, 0.28*inch])
     m_tbl.setStyle(TableStyle([
-        ('BACKGROUND',   (0,0), (-1,-1), C['blue_pale']),
+        ('BACKGROUND',   (0,0), (-1,-1), CH['blue_pale']),
         ('ALIGN',        (0,0), (-1,-1), 'CENTER'),
         ('VALIGN',       (0,0), (-1,-1), 'MIDDLE'),
-        ('GRID',         (0,0), (-1,-1), 0.4, C['border']),
+        ('GRID',         (0,0), (-1,-1), 0.4, CH['border']),
         ('TOPPADDING',   (0,0), (-1,0),  12),
         ('BOTTOMPADDING',(0,-1),(-1,-1), 10),
         ('TOPPADDING',   (0,-1),(-1,-1), 2),
-        ('LINEABOVE',    (0,0), (-1,0),  1.5, C['blue']),
-        ('LINEBELOW',    (0,-1),(-1,-1), 1.5, C['blue']),
+        ('LINEABOVE',    (0,0), (-1,0),  1.5, CH['blue']),
+        ('LINEBELOW',    (0,-1),(-1,-1), 1.5, CH['blue']),
     ]))
     story.append(m_tbl)
     story.append(Spacer(1, 0.18*inch))
@@ -577,15 +585,15 @@ def build_sales_overview(story, S, df, date_col, sales_col, summary, company_nam
 
     fig, ax = plt.subplots(figsize=(9.5, 3.8))
     ax.fill_between(weekly[date_col], weekly[sales_col],
-                    alpha=0.08, color=C['chart1'])
+                    alpha=0.08, color=CH['chart1'])
     ax.plot(weekly[date_col], weekly[sales_col],
-            color=C['chart1'], linewidth=1.2, alpha=0.65, label='Revenue')
+            color=CH['chart1'], linewidth=1.2, alpha=0.65, label='Revenue')
     ax.plot(weekly[date_col], weekly['ma'],
-            color=C['chart2'], linewidth=2.2, label='4-Period Moving Average', zorder=5)
+            color=CH['chart2'], linewidth=2.2, label='4-Period Moving Average', zorder=5)
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(money_fmt))
     title_txt = f"{company_name} — Revenue Trend" if company_name else "Revenue Trend"
     ax.set_title(title_txt, fontsize=11, fontweight='bold',
-                 color=C['chart1'], pad=12)
+                 color=CH['chart1'], pad=12)
     ax.tick_params(colors='#4B5563')
     ax.spines['left'].set_color('#D1D5DB')
     ax.spines['bottom'].set_color('#D1D5DB')
@@ -625,14 +633,14 @@ def build_trend_analysis(story, S, monthly_df, company_name):
         return
 
     avg_val = np.mean(vals)
-    bar_clrs = [C['chart3'] if v >= avg_val * 1.05
-                else C['chart2'] if v >= avg_val * 0.95
-                else C['chart_neg'] for v in vals]
+    bar_clrs = [CH['chart3'] if v >= avg_val * 1.05
+                else CH['chart2'] if v >= avg_val * 0.95
+                else CH['chart_neg'] for v in vals]
 
     fig, ax = plt.subplots(figsize=(9.5, 3.8))
     bars = ax.bar(months_str, vals, color=bar_clrs, width=0.65,
                   edgecolor='white', linewidth=0.4)
-    ax.axhline(y=avg_val, color=C['chart5'], linewidth=1.2,
+    ax.axhline(y=avg_val, color=CH['chart5'], linewidth=1.2,
                linestyle='--', alpha=0.8, label=f'Period Average: {money_fmt(avg_val)}')
     for bar, val in zip(bars, vals):
         if val > 0:
@@ -642,7 +650,7 @@ def build_trend_analysis(story, S, monthly_df, company_name):
                     fontsize=6.5, color='#374151', fontweight='500')
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(money_fmt))
     ax.set_title("Period Revenue Distribution", fontsize=11, fontweight='bold',
-                 color=C['chart1'], pad=12)
+                 color=CH['chart1'], pad=12)
     ax.tick_params(axis='x', rotation=40, labelsize=7.5)
     ax.legend(fontsize=8, framealpha=0.9)
     ax.spines['left'].set_color('#D1D5DB')
@@ -681,13 +689,13 @@ def build_segment_analysis(story, S, store_df, group_col, company_name):
     labels  = top10[group_col].astype(str).tolist()
     rev     = top10['total'].tolist()
     avg_rev = store_df['total'].mean()
-    bar_clrs= [C['chart1'] if i < 3 else C['chart2'] if i < 7 else C['chart3']
+    bar_clrs= [CH['chart1'] if i < 3 else CH['chart2'] if i < 7 else CH['chart3']
                for i in range(len(rev))]
 
     fig, ax = plt.subplots(figsize=(9.5, 3.8))
     bars = ax.bar(labels, rev, color=bar_clrs, width=0.6,
                   edgecolor='white', linewidth=0.4)
-    ax.axhline(y=avg_rev, color=C['chart5'], linewidth=1.2,
+    ax.axhline(y=avg_rev, color=CH['chart5'], linewidth=1.2,
                linestyle='--', alpha=0.8, label=f'Portfolio Average: {money_fmt(avg_rev)}')
     for bar, val in zip(bars, rev):
         ax.text(bar.get_x() + bar.get_width()/2,
@@ -696,7 +704,7 @@ def build_segment_analysis(story, S, store_df, group_col, company_name):
                 fontsize=6.5, color='#374151', fontweight='500')
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(money_fmt))
     ax.set_title(f"Top {len(top10)} {group_col} Segments by Revenue",
-                 fontsize=11, fontweight='bold', color='#2c3e50', pad=12)
+                 fontsize=11, fontweight='bold', color=CH['chart1'], pad=12)
     ax.set_xlabel(group_col, fontsize=9)
     ax.legend(fontsize=8, framealpha=0.9)
     ax.spines['left'].set_color('#D1D5DB')
@@ -745,7 +753,7 @@ def build_correlations(story, S, corr_series):
     ))
     story.append(Spacer(1, 0.15*inch))
 
-    bar_clrs = [C['chart_pos'] if v > 0 else C['chart_neg'] for v in corr_series.values]
+    bar_clrs = [CH['chart_pos'] if v > 0 else CH['chart_neg'] for v in corr_series.values]
 
     fig, ax = plt.subplots(figsize=(9.5, max(2.8, len(corr_series)*0.45)))
     bars = ax.barh(corr_series.index, corr_series.values,
@@ -756,9 +764,9 @@ def build_correlations(story, S, corr_series):
                 f'{val:.4f}', va='center',
                 ha='left' if val >= 0 else 'right',
                 fontsize=8, color='#374151')
-    ax.axvline(x=0, color='#2c3e50', linewidth=0.8)
+    ax.axvline(x=0, color=CH['gray_dark'], linewidth=0.8)
     ax.set_title("Correlation Coefficients — External Variables vs Revenue",
-                 fontsize=11, fontweight='bold', color='#2c3e50', pad=12)
+                 fontsize=11, fontweight='bold', color=CH['chart1'], pad=12)
     ax.set_xlabel("Pearson Correlation Coefficient", fontsize=9)
     ax.spines['left'].set_color('#D1D5DB')
     ax.spines['bottom'].set_color('#D1D5DB')
@@ -815,15 +823,15 @@ def build_forecast_section(story, S, forecast, prophet_data,
     col_w = CONTENT_W / 3
     m_tbl = Table(metrics, colWidths=[col_w]*3, rowHeights=[0.48*inch, 0.28*inch])
     m_tbl.setStyle(TableStyle([
-        ('BACKGROUND',   (0,0), (-1,-1), C['blue_pale']),
+        ('BACKGROUND',   (0,0), (-1,-1), CH['blue_pale']),
         ('ALIGN',        (0,0), (-1,-1), 'CENTER'),
         ('VALIGN',       (0,0), (-1,-1), 'MIDDLE'),
-        ('GRID',         (0,0), (-1,-1), 0.4, C['border']),
+        ('GRID',         (0,0), (-1,-1), 0.4, CH['border']),
         ('TOPPADDING',   (0,0), (-1,0),  12),
         ('BOTTOMPADDING',(0,-1),(-1,-1), 10),
         ('TOPPADDING',   (0,-1),(-1,-1), 2),
-        ('LINEABOVE',    (0,0), (-1,0),  1.5, C['teal']),
-        ('LINEBELOW',    (0,-1),(-1,-1), 1.5, C['teal']),
+        ('LINEABOVE',    (0,0), (-1,0),  1.5, CH['teal']),
+        ('LINEBELOW',    (0,-1),(-1,-1), 1.5, CH['teal']),
     ]))
     story.append(m_tbl)
     story.append(Spacer(1, 0.18*inch))
@@ -832,20 +840,20 @@ def build_forecast_section(story, S, forecast, prophet_data,
 
     fig, ax = plt.subplots(figsize=(9.5, 3.8))
     ax.plot(prophet_data['ds'], prophet_data['y'],
-            color=C['chart1'], linewidth=1.4, label='Historical Revenue', alpha=0.8)
-    ax.axvline(x=prophet_data['ds'].max(), color=C['gray'],
+            color=CH['chart1'], linewidth=1.4, label='Historical Revenue', alpha=0.8)
+    ax.axvline(x=prophet_data['ds'].max(), color=CH['gray'],
                linewidth=0.8, linestyle=':', alpha=0.7)
     ax.plot(future['ds'], future['yhat'],
-            color=C['teal'], linewidth=2.2, linestyle='--', label='Projected Revenue', zorder=5)
+            color=CH['teal'], linewidth=2.2, linestyle='--', label='Projected Revenue', zorder=5)
     ax.fill_between(future['ds'], future['yhat_lower'], future['yhat_upper'],
-                    alpha=0.12, color=C['teal'], label='Confidence Range')
+                    alpha=0.12, color=CH['teal'], label='Confidence Range')
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(money_fmt))
     title_txt = f"{company_name} — Revenue Projection" if company_name else "Revenue Projection"
     ax.set_title(title_txt, fontsize=11, fontweight='bold',
-                 color=C['chart1'], pad=12)
+                 color=CH['chart1'], pad=12)
     ax.legend(fontsize=8.5, framealpha=0.9)
     ax.text(prophet_data['ds'].max(), ax.get_ylim()[1]*0.97,
-            ' Forecast\n Start', fontsize=7.5, color=C['gray'], va='top')
+            ' Forecast\n Start', fontsize=7.5, color=CH['gray'], va='top')
     ax.spines['left'].set_color('#D1D5DB')
     ax.spines['bottom'].set_color('#D1D5DB')
     plt.tight_layout(pad=1.2)
