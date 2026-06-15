@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import os
@@ -110,6 +111,33 @@ with st.sidebar:
     else:
         analyze_btn = False
         st.info(T["upload_prompt"])
+
+    st.divider()
+
+    # ── Priority Action Plan toggle ──────────────────────
+    pap_labels = {
+        "en": "Include Priority Action Plan",
+        "ar": "تضمين خطة الأولويات",
+        "fr": "Inclure le Plan d'Action Prioritaire",
+    }
+    pap_help = {
+        "en": "Adds a strategic Priority Action Plan section to the PDF report with Quick Wins, Medium-Term strategy, and Long-Term recommendations.",
+        "ar": "يضيف قسم خطة الأولويات الاستراتيجية إلى تقرير PDF مع المكاسب السريعة والاستراتيجية متوسطة وطويلة المدى.",
+        "fr": "Ajoute une section Plan d'Action Prioritaire au rapport PDF avec Gains Rapides, Stratégie Moyen Terme et Long Terme.",
+    }
+    include_pap = st.checkbox(
+        f"⭐ {pap_labels.get(lang, pap_labels['en'])}",
+        value=False,
+        help=pap_help.get(lang, pap_help["en"]),
+        key="include_pap"
+    )
+    if include_pap:
+        pap_badge = {
+            "en": "Premium feature enabled — Priority Action Plan will be included in the PDF.",
+            "ar": "الميزة المتميزة مفعّلة — ستُضمَّن خطة الأولويات في تقرير PDF.",
+            "fr": "Fonctionnalité premium activée — le Plan d'Action sera inclus dans le PDF.",
+        }
+        st.success(pap_badge.get(lang, pap_badge["en"]))
 
     st.divider()
     st.caption(T["built_with"])
@@ -353,6 +381,7 @@ if st.session_state.analyzed:
                     company_name=cname, T=T,
                     ai_result=st.session_state.get('ai_result'),
                     ai_type=st.session_state.get('ai_result_type'),
+                    include_action_plan=st.session_state.get('include_pap', False),
                 )
                 st.download_button(T["download_pdf_now"], pdf_bytes,
                     file_name=f"report_{pd.Timestamp.now().strftime('%Y%m%d')}.pdf",
