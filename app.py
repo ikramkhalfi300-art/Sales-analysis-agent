@@ -56,9 +56,9 @@ with st.sidebar:
 
     period_options = {
         "Weekly":    ("W",  12, "week"),
-        "Monthly":   ("M", 6,  "month"),
-        "Quarterly": ("Q", 4,  "quarter"),
-        "Yearly":    ("YE", 3,  "year"),
+        "Monthly":   ("M",  6,  "month"),
+        "Quarterly": ("Q",  4,  "quarter"),
+        "Yearly":    ("A",  3,  "year"),
     }
     period_labels = {
         "en": {"Weekly":"Weekly","Monthly":"Monthly","Quarterly":"Quarterly","Yearly":"Yearly"},
@@ -219,7 +219,6 @@ if analyze_btn and uploaded_file and date_col and sales_col:
             prev  = period_totals[sales_col].iloc[-2]
             mom_growth = (last - prev) / prev * 100 if prev > 0 else 0
 
-        # Pareto 80/20
         pareto_pct = None
         if group_col and store_df is not None:
             cumsum = store_df['total'].cumsum()
@@ -227,7 +226,6 @@ if analyze_btn and uploaded_file and date_col and sales_col:
             n80    = (cumsum <= total * 0.8).sum() + 1
             pareto_pct = round(n80 / len(store_df) * 100, 1)
 
-        # أفضل وأسوأ فترة
         best_period_label  = str(period_totals.loc[period_totals[sales_col].idxmax(), 'period'])
         worst_period_label = str(period_totals.loc[period_totals[sales_col].idxmin(), 'period'])
 
@@ -295,7 +293,6 @@ if st.session_state.analyzed:
     if cname:
         st.markdown(f'<span class="company-badge">🏢 {cname}</span>', unsafe_allow_html=True)
 
-    # ── 5 Tabs ─────────────────────────────────────────────
     tab_labels = {
         "en": ["📊 Overview", "🎯 Decision Board", "📈 Charts", "🔮 Forecast", "💬 Performance Overview"],
         "ar": ["📊 نظرة عامة", "🎯 لوحة القرارات", "📈 الرسوم", "🔮 التوقعات", "💬 نظرة الأداء"],
@@ -313,7 +310,6 @@ if st.session_state.analyzed:
         with col3: st.metric(T["avg_period"],    f"${summary['avg_weekly_sales']:,.0f}")
         with col4: st.metric(T["best_period"],   f"${summary['max_single_week']:,.0f}")
 
-        # ── KPI ذكية ──────────────────────────────────────
         st.divider()
         kpi_title = {"en":"📊 Smart KPIs","ar":"📊 مؤشرات ذكية","fr":"📊 KPIs Intelligents"}
         st.subheader(kpi_title.get(lang,"📊 Smart KPIs"))
@@ -321,7 +317,6 @@ if st.session_state.analyzed:
         k1,k2,k3,k4 = st.columns(4)
         with k1:
             if kpi_data.get('mom_growth') is not None:
-                delta_color = "normal" if kpi_data['mom_growth'] >= 0 else "inverse"
                 st.metric(
                     "MoM Growth" if lang=="en" else "نمو شهر/شهر" if lang=="ar" else "Croissance MoM",
                     f"{kpi_data['mom_growth']:+.1f}%",
@@ -405,7 +400,6 @@ if st.session_state.analyzed:
         }
         st.subheader(dec_titles.get(lang,"🎯 Decision Board"))
 
-        # ملخص القرارات
         if decision_stats:
             c1,c2,c3,c4 = st.columns(4)
             with c1:
@@ -446,7 +440,6 @@ if st.session_state.analyzed:
 
         st.divider()
 
-        # فلتر
         if st.session_state.decisions_df is not None and len(st.session_state.decisions_df) > 0:
             decisions_df = st.session_state.decisions_df
 
@@ -458,7 +451,7 @@ if st.session_state.analyzed:
                 horizontal=True
             )
 
-            rating_col = decisions_df.columns[0]  # عمود التقييم دائماً الأول
+            rating_col = decisions_df.columns[0]
             if rating_filter != all_label.get(lang,"All"):
                 filtered_df = decisions_df[decisions_df[rating_col] == rating_filter]
             else:
@@ -471,7 +464,6 @@ if st.session_state.analyzed:
                 height=min(600, 50 + len(filtered_df) * 38)
             )
 
-            # تنزيل القرارات كـ CSV
             csv_label = {"en":"📥 Download Decisions CSV","ar":"📥 تنزيل القرارات CSV","fr":"📥 Télécharger CSV"}
             st.download_button(
                 csv_label.get(lang, csv_label["en"]),
@@ -491,8 +483,6 @@ if st.session_state.analyzed:
     with tab2:
         import plotly.express as px
         import plotly.graph_objects as go
-
-        period_unit = st.session_state.get('period_unit','week')
 
         st.subheader(T["sales_trend"])
         weekly = df.groupby(date_col)[sales_col].sum().reset_index().sort_values(date_col)
@@ -571,7 +561,8 @@ if st.session_state.analyzed:
             ))
             fig4.update_layout(
                 title=chart_title(T["correlation"]),
-                height=350, plot_bgcolor='white', paper_bgcolor='white', xaxis_gridcolor='#F3F4F6'
+                height=350, plot_bgcolor='white', paper_bgcolor='white',
+                xaxis_gridcolor='#F3F4F6'
             )
             fig4.add_vline(x=0, line_color='black', line_width=0.8)
             st.plotly_chart(fig4, use_container_width=True)
@@ -627,7 +618,7 @@ if st.session_state.analyzed:
         st.plotly_chart(fig5, use_container_width=True)
         st.info(f"{T['peak_info']} **{forecast_summary['peak_week']}** → **${forecast_summary['peak_expected_sales']:,.0f}**")
 
-    # ── Tab 5: Performance Overview (بدل AI Agent) ─────────
+    # ── Tab 5: Performance Overview ────────────────────────
     with tab4:
         perf_titles = {
             "en": "💬 Performance Overview",
