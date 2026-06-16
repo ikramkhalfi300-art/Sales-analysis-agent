@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import os
@@ -57,8 +56,8 @@ with st.sidebar:
 
     period_options = {
         "Weekly":    ("W",  12, "week"),
-        "Monthly":   ("ME", 6,  "month"),
-        "Quarterly": ("QE", 4,  "quarter"),
+        "Monthly":   ("M", 6,  "month"),
+        "Quarterly": ("Q", 4,  "quarter"),
         "Yearly":    ("YE", 3,  "year"),
     }
     period_labels = {
@@ -382,6 +381,7 @@ if st.session_state.analyzed:
                     ai_result=st.session_state.get('ai_result'),
                     ai_type=st.session_state.get('ai_result_type'),
                     include_action_plan=st.session_state.get('include_pap', False),
+                    lang=lang,
                 )
                 st.download_button(T["download_pdf_now"], pdf_bytes,
                     file_name=f"report_{pd.Timestamp.now().strftime('%Y%m%d')}.pdf",
