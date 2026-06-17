@@ -31,13 +31,17 @@ st.markdown(f"""
         padding: 4px 14px; font-size: 0.9rem; font-weight: 600;
         margin-bottom: 0.5rem;
     }}
-    .decision-card {{
-        background: #F8FAFC; border-left: 4px solid #1E40AF;
-        padding: 12px 16px; border-radius: 6px; margin-bottom: 8px;
+    .scenario-bear {{
+        background: #FEF2F2; border-left: 4px solid #DC2626;
+        padding: 10px 14px; border-radius: 6px; margin-bottom: 6px;
     }}
-    .kpi-card {{
-        background: white; border: 1px solid #E5E7EB;
-        border-radius: 8px; padding: 16px; text-align: center;
+    .scenario-base {{
+        background: #EFF6FF; border-left: 4px solid #2563EB;
+        padding: 10px 14px; border-radius: 6px; margin-bottom: 6px;
+    }}
+    .scenario-bull {{
+        background: #F0FDF4; border-left: 4px solid #16A34A;
+        padding: 10px 14px; border-radius: 6px; margin-bottom: 6px;
     }}
     .stApp {{ direction: {direction}; }}
 </style>
@@ -113,21 +117,14 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Priority Action Plan toggle ──────────────────────
     pap_labels = {
         "en": "Include Priority Action Plan",
         "ar": "تضمين خطة الأولويات",
         "fr": "Inclure le Plan d'Action Prioritaire",
     }
-    pap_help = {
-        "en": "Adds a strategic Priority Action Plan section to the PDF report with Quick Wins, Medium-Term strategy, and Long-Term recommendations.",
-        "ar": "يضيف قسم خطة الأولويات الاستراتيجية إلى تقرير PDF مع المكاسب السريعة والاستراتيجية متوسطة وطويلة المدى.",
-        "fr": "Ajoute une section Plan d'Action Prioritaire au rapport PDF avec Gains Rapides, Stratégie Moyen Terme et Long Terme.",
-    }
     include_pap = st.checkbox(
         f"⭐ {pap_labels.get(lang, pap_labels['en'])}",
         value=False,
-        help=pap_help.get(lang, pap_help["en"]),
         key="include_pap"
     )
     if include_pap:
@@ -207,11 +204,9 @@ if analyze_btn and uploaded_file and date_col and sales_col:
         numeric_cols = [c for c in df.select_dtypes(include='number').columns if c != sales_col]
         corr_series  = df[[sales_col]+numeric_cols].corr()[sales_col].drop(sales_col).round(4) if numeric_cols else None
 
-        # ── KPI ذكية ──────────────────────────────────────
         df_kpi = df.copy()
         df_kpi['period'] = df_kpi[date_col].dt.to_period(freq)
-        period_totals = df_kpi.groupby('period')[sales_col].sum().reset_index()
-        period_totals = period_totals.sort_values('period')
+        period_totals = df_kpi.groupby('period')[sales_col].sum().reset_index().sort_values('period')
 
         mom_growth = None
         if len(period_totals) >= 2:
@@ -229,20 +224,23 @@ if analyze_btn and uploaded_file and date_col and sales_col:
         best_period_label  = str(period_totals.loc[period_totals[sales_col].idxmax(), 'period'])
         worst_period_label = str(period_totals.loc[period_totals[sales_col].idxmin(), 'period'])
 
+        sales_std  = float(df[sales_col].std())
+        sales_mean = float(df[sales_col].mean())
+        cv_pct     = (sales_std / sales_mean * 100) if sales_mean > 0 else 0
+
         kpi_data = {
-            'mom_growth':        mom_growth,
-            'pareto_pct':        pareto_pct,
-            'best_period':       best_period_label,
-            'worst_period':      worst_period_label,
-            'period_count':      len(period_totals),
-            'consistency_score': round(1 - period_totals[sales_col].std() / period_totals[sales_col].mean() * 100, 1) if period_totals[sales_col].mean() > 0 else 0,
+            'mom_growth':  mom_growth,
+            'pareto_pct':  pareto_pct,
+            'best_period': best_period_label,
+            'worst_period':worst_period_label,
+            'period_count':len(period_totals),
+            'cv_pct':      round(cv_pct, 1),
         }
 
-        # ── Decision Board ────────────────────────────────
         from src.decision_engine import generate_decisions, decisions_to_df, get_summary_stats
-        decisions     = generate_decisions(df, date_col, sales_col, group_col, lang)
-        decisions_df  = decisions_to_df(decisions, lang)
-        decision_stats= get_summary_stats(decisions)
+        decisions      = generate_decisions(df, date_col, sales_col, group_col, lang)
+        decisions_df   = decisions_to_df(decisions, lang)
+        decision_stats = get_summary_stats(decisions)
 
         st.session_state.summary        = summary
         st.session_state.store_df       = store_df
@@ -258,8 +256,23 @@ if analyze_btn and uploaded_file and date_col and sales_col:
     with st.spinner("🔮 " + ("Forecasting..." if lang=="en" else "جاري التنبؤ..." if lang=="ar" else "Prévision...")):
         from src.forecaster import train_and_forecast, get_forecast_summary
         n_periods = st.session_state.forecast_periods
-        forecast, prophet_data = train_and_forecast(df, weeks=n_periods, date_col=date_col, sales_col=sales_col)
-        forecast_summary = get_forecast_summary(forecast)
+
+        has_qa_errors = any(
+            'error' in line.lower() or 'issue' in line.lower()
+            for line in st.session_state.get('report', [])
+        )
+
+        group_col_avg = None
+        if store_df is not None and len(store_df) > 0:
+            group_col_avg = float(store_df['avg_weekly'].iloc[0])
+
+        forecast, prophet_data = train_and_forecast(
+            df, weeks=n_periods,
+            date_col=date_col, sales_col=sales_col,
+            has_qa_errors=has_qa_errors,
+        )
+        forecast_summary = get_forecast_summary(forecast, group_col_avg=group_col_avg)
+
         st.session_state.forecast         = forecast
         st.session_state.prophet_data     = prophet_data
         st.session_state.forecast_summary = forecast_summary
@@ -301,7 +314,7 @@ if st.session_state.analyzed:
     tabs = st.tabs(tab_labels.get(lang, tab_labels["en"]))
     tab1, tab_dec, tab2, tab3, tab4 = tabs
 
-    # ── Tab 1: Overview ────────────────────────────────────
+    # ── Tab 1: Overview ───────────────────────────────────
     with tab1:
         st.subheader(T["data_summary"])
         col1,col2,col3,col4 = st.columns(4)
@@ -311,6 +324,24 @@ if st.session_state.analyzed:
         with col4: st.metric(T["best_period"],   f"${summary['max_single_week']:,.0f}")
 
         st.divider()
+
+        # Volatility Warning
+        cv_pct     = kpi_data.get('cv_pct', 0)
+        volatility = forecast_summary.get('volatility', {})
+        if volatility and cv_pct > 40:
+            vol_msgs = {
+                "en": f"{volatility.get('badge','🔴')} **Revenue Volatility: {volatility.get('level','High')} (CV = {cv_pct:.1f}%)** — {volatility.get('risk','')}",
+                "ar": f"{volatility.get('badge','🔴')} **تقلب الإيرادات: {volatility.get('level','عالي')} (CV = {cv_pct:.1f}%)** — {volatility.get('risk','')}",
+                "fr": f"{volatility.get('badge','🔴')} **Volatilité: {volatility.get('level','Élevée')} (CV = {cv_pct:.1f}%)** — {volatility.get('risk','')}",
+            }
+            st.warning(vol_msgs.get(lang, vol_msgs["en"]))
+
+        # Sanity Check Warning
+        sanity = forecast_summary.get('sanity_check', {})
+        if sanity and not sanity.get('passed', True):
+            for warn in sanity.get('warnings', []):
+                st.error(warn)
+
         kpi_title = {"en":"📊 Smart KPIs","ar":"📊 مؤشرات ذكية","fr":"📊 KPIs Intelligents"}
         st.subheader(kpi_title.get(lang,"📊 Smart KPIs"))
 
@@ -391,7 +422,7 @@ if st.session_state.analyzed:
             st.subheader(f"{T['performance_by']} {st.session_state.group_col}")
             st.dataframe(st.session_state.store_df, use_container_width=True)
 
-    # ── Tab 2: Decision Board ──────────────────────────────
+    # ── Tab 2: Decision Board ─────────────────────────────
     with tab_dec:
         dec_titles = {
             "en": "🎯 Decision Board",
@@ -402,26 +433,10 @@ if st.session_state.analyzed:
 
         if decision_stats:
             c1,c2,c3,c4 = st.columns(4)
-            with c1:
-                st.metric(
-                    "✅ Invest" if lang=="en" else "✅ استثمر" if lang=="ar" else "✅ Investir",
-                    decision_stats.get('invest',0)
-                )
-            with c2:
-                st.metric(
-                    "👁️ Monitor" if lang=="en" else "👁️ راقب" if lang=="ar" else "👁️ Surveiller",
-                    decision_stats.get('monitor',0)
-                )
-            with c3:
-                st.metric(
-                    "🔧 Restructure" if lang=="en" else "🔧 أعد الهيكلة" if lang=="ar" else "🔧 Restructurer",
-                    decision_stats.get('restructure',0)
-                )
-            with c4:
-                st.metric(
-                    "🔴 Critical" if lang=="en" else "🔴 حرج" if lang=="ar" else "🔴 Critique",
-                    decision_stats.get('critical_count',0)
-                )
+            with c1: st.metric("✅ Invest" if lang=="en" else "✅ استثمر" if lang=="ar" else "✅ Investir", decision_stats.get('invest',0))
+            with c2: st.metric("👁️ Monitor" if lang=="en" else "👁️ راقب" if lang=="ar" else "👁️ Surveiller", decision_stats.get('monitor',0))
+            with c3: st.metric("🔧 Restructure" if lang=="en" else "🔧 أعد الهيكلة" if lang=="ar" else "🔧 Restructurer", decision_stats.get('restructure',0))
+            with c4: st.metric("🔴 Critical" if lang=="en" else "🔴 حرج" if lang=="ar" else "🔴 Critique", decision_stats.get('critical_count',0))
 
             if decision_stats.get('critical_units'):
                 critical_label = {
@@ -442,72 +457,42 @@ if st.session_state.analyzed:
 
         if st.session_state.decisions_df is not None and len(st.session_state.decisions_df) > 0:
             decisions_df = st.session_state.decisions_df
-
             filter_label = {"en":"Filter by rating:","ar":"فلتر حسب التقييم:","fr":"Filtrer par note:"}
             all_label    = {"en":"All","ar":"الكل","fr":"Tout"}
-            rating_filter = st.radio(
-                filter_label.get(lang,"Filter:"),
-                [all_label.get(lang,"All"), "🟢", "🟡", "🔴"],
-                horizontal=True
-            )
-
+            rating_filter = st.radio(filter_label.get(lang,"Filter:"), [all_label.get(lang,"All"), "🟢", "🟡", "🔴"], horizontal=True)
             rating_col = decisions_df.columns[0]
-            if rating_filter != all_label.get(lang,"All"):
-                filtered_df = decisions_df[decisions_df[rating_col] == rating_filter]
-            else:
-                filtered_df = decisions_df
-
-            st.dataframe(
-                filtered_df,
-                use_container_width=True,
-                hide_index=True,
-                height=min(600, 50 + len(filtered_df) * 38)
-            )
-
+            filtered_df = decisions_df if rating_filter == all_label.get(lang,"All") else decisions_df[decisions_df[rating_col] == rating_filter]
+            st.dataframe(filtered_df, use_container_width=True, hide_index=True, height=min(600, 50 + len(filtered_df) * 38))
             csv_label = {"en":"📥 Download Decisions CSV","ar":"📥 تنزيل القرارات CSV","fr":"📥 Télécharger CSV"}
-            st.download_button(
-                csv_label.get(lang, csv_label["en"]),
-                data=filtered_df.to_csv(index=False),
-                file_name=f"decisions_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
+            st.download_button(csv_label.get(lang, csv_label["en"]), data=filtered_df.to_csv(index=False),
+                               file_name=f"decisions_{pd.Timestamp.now().strftime('%Y%m%d')}.csv", mime="text/csv")
         else:
             no_group = {
                 "en": "Decision Board requires a group column (Store, Branch, Region...) in your data.",
                 "ar": "لوحة القرارات تحتاج عمود تجميع (متجر، فرع، منطقة...) في بياناتك.",
-                "fr": "Le tableau de décision nécessite une colonne de groupe (Magasin, Branche...) dans vos données.",
+                "fr": "Le tableau de décision nécessite une colonne de groupe dans vos données.",
             }
             st.info(no_group.get(lang, no_group["en"]))
 
-    # ── Tab 3: Charts ──────────────────────────────────────
+    # ── Tab 3: Charts ─────────────────────────────────────
     with tab2:
-        import plotly.express as px
         import plotly.graph_objects as go
 
         st.subheader(T["sales_trend"])
         weekly = df.groupby(date_col)[sales_col].sum().reset_index().sort_values(date_col)
         weekly['ma4'] = weekly[sales_col].rolling(4).mean()
         fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=weekly[date_col], y=weekly[sales_col],
-            fill='tozeroy', fillcolor='rgba(37,99,235,0.08)',
-            line=dict(color='#2563EB', width=1.5),
-            name='Sales', hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'
-        ))
-        fig.add_trace(go.Scatter(
-            x=weekly[date_col], y=weekly['ma4'],
-            line=dict(color='#DC2626', width=2.5),
-            name=T["period_avg"], hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'
-        ))
-        fig.update_layout(
-            title=chart_title(T["sales_trend"]),
-            hovermode='x unified', height=400,
+        fig.add_trace(go.Scatter(x=weekly[date_col], y=weekly[sales_col],
+            fill='tozeroy', fillcolor='rgba(37,99,235,0.08)', line=dict(color='#2563EB', width=1.5),
+            name='Sales', hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'))
+        fig.add_trace(go.Scatter(x=weekly[date_col], y=weekly['ma4'],
+            line=dict(color='#DC2626', width=2.5), name=T["period_avg"],
+            hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'))
+        fig.update_layout(title=chart_title(T["sales_trend"]), hovermode='x unified', height=400,
             legend=dict(orientation='h', yanchor='bottom', y=1.02),
             yaxis=dict(tickprefix='$', tickformat=',.0f'),
             plot_bgcolor='white', paper_bgcolor='white',
-            xaxis=dict(showgrid=True, gridcolor='#F3F4F6'),
-            yaxis_gridcolor='#F3F4F6'
-        )
+            xaxis=dict(showgrid=True, gridcolor='#F3F4F6'), yaxis_gridcolor='#F3F4F6')
         st.plotly_chart(fig, use_container_width=True)
 
         st.subheader(T["monthly_sales"])
@@ -517,17 +502,12 @@ if st.session_state.analyzed:
         bar_colors = ['#16A34A' if v >= pd.Series(vals).quantile(0.6)
                       else '#D97706' if v >= pd.Series(vals).quantile(0.3)
                       else '#DC2626' for v in vals]
-        fig2 = go.Figure(go.Bar(
-            x=months_str, y=vals, marker_color=bar_colors,
+        fig2 = go.Figure(go.Bar(x=months_str, y=vals, marker_color=bar_colors,
             text=[f'${v/1e6:.1f}M' if v>=1e6 else f'${v/1e3:.0f}K' for v in vals],
-            textposition='outside',
-            hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'
-        ))
-        fig2.update_layout(
-            title=chart_title(T["monthly_sales"]),
-            height=400, yaxis=dict(tickprefix='$', tickformat=',.0f'),
-            plot_bgcolor='white', paper_bgcolor='white', yaxis_gridcolor='#F3F4F6'
-        )
+            textposition='outside', hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'))
+        fig2.update_layout(title=chart_title(T["monthly_sales"]), height=400,
+            yaxis=dict(tickprefix='$', tickformat=',.0f'),
+            plot_bgcolor='white', paper_bgcolor='white', yaxis_gridcolor='#F3F4F6')
         st.plotly_chart(fig2, use_container_width=True)
 
         if st.session_state.store_df is not None:
@@ -535,42 +515,79 @@ if st.session_state.analyzed:
             store_df  = st.session_state.store_df
             st.subheader(f"{T['sales_by']} {group_col}")
             top10 = store_df.head(10)
-            fig3 = go.Figure(go.Bar(
-                x=top10[group_col].astype(str), y=top10['total'],
+            fig3 = go.Figure(go.Bar(x=top10[group_col].astype(str), y=top10['total'],
                 marker_color='#2563EB', opacity=0.85,
                 text=[f'${v/1e6:.1f}M' if v>=1e6 else f'${v/1e3:.0f}K' for v in top10['total']],
                 textposition='outside',
-                hovertemplate=f'{group_col}: %{{x}}<br>$%{{y:,.0f}}<extra></extra>'
-            ))
-            fig3.update_layout(
-                title=chart_title(f"{T['sales_by']} {group_col}"),
-                height=400, yaxis=dict(tickprefix='$', tickformat=',.0f'),
-                plot_bgcolor='white', paper_bgcolor='white', yaxis_gridcolor='#F3F4F6'
-            )
+                hovertemplate=f'{group_col}: %{{x}}<br>$%{{y:,.0f}}<extra></extra>'))
+            fig3.update_layout(title=chart_title(f"{T['sales_by']} {group_col}"), height=400,
+                yaxis=dict(tickprefix='$', tickformat=',.0f'),
+                plot_bgcolor='white', paper_bgcolor='white', yaxis_gridcolor='#F3F4F6')
             st.plotly_chart(fig3, use_container_width=True)
 
         if st.session_state.corr_series is not None:
             st.subheader(T["correlation"])
             corr = st.session_state.corr_series
             corr_colors = ['#16A34A' if v>0 else '#DC2626' for v in corr.values]
-            fig4 = go.Figure(go.Bar(
-                x=corr.values, y=corr.index, orientation='h',
+            fig4 = go.Figure(go.Bar(x=corr.values, y=corr.index, orientation='h',
                 marker_color=corr_colors, opacity=0.85,
                 text=[f'{v:.4f}' for v in corr.values], textposition='outside',
-                hovertemplate='%{y}: %{x:.4f}<extra></extra>'
-            ))
-            fig4.update_layout(
-                title=chart_title(T["correlation"]),
-                height=350, plot_bgcolor='white', paper_bgcolor='white',
-                xaxis_gridcolor='#F3F4F6'
-            )
+                hovertemplate='%{y}: %{x:.4f}<extra></extra>'))
+            fig4.update_layout(title=chart_title(T["correlation"]), height=350,
+                plot_bgcolor='white', paper_bgcolor='white', xaxis_gridcolor='#F3F4F6')
             fig4.add_vline(x=0, line_color='black', line_width=0.8)
             st.plotly_chart(fig4, use_container_width=True)
 
-    # ── Tab 4: Forecast ────────────────────────────────────
+    # ── Tab 4: Forecast ───────────────────────────────────
     with tab3:
         import plotly.graph_objects as go
         st.subheader(T["forecast_title"])
+
+        # Confidence Badge
+        conf_level = forecast_summary.get('confidence_level', 'Medium')
+        conf_color = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(conf_level, "🟡")
+        st.info(f"{conf_color} **{'Forecast Confidence' if lang=='en' else 'مستوى ثقة التوقعات' if lang=='ar' else 'Confiance Prévision'}: {conf_level}**")
+
+        # Sanity Check
+        sanity = forecast_summary.get('sanity_check', {})
+        if sanity and not sanity.get('passed', True):
+            for warn in sanity.get('warnings', []):
+                st.error(warn)
+
+        # Three-Scenario Cards
+        scenario_title = {"en":"📊 12-Period Forecast Scenarios","ar":"📊 سيناريوهات 12 فترة","fr":"📊 Scénarios — 12 Périodes"}
+        st.subheader(scenario_title.get(lang, scenario_title["en"]))
+
+        sc1, sc2, sc3 = st.columns(3)
+        bear_12 = forecast_summary.get('bear_12_weeks', forecast_summary['next_12_weeks'] * 0.75)
+        bull_12 = forecast_summary.get('bull_12_weeks', forecast_summary['next_12_weeks'] * 1.25)
+        base_12 = forecast_summary['next_12_weeks']
+        bear_prob = forecast_summary.get('bear_probability', 0.25)
+        base_prob = forecast_summary.get('base_probability', 0.55)
+        bull_prob = forecast_summary.get('bull_probability', 0.20)
+
+        with sc1:
+            st.markdown(f'<div class="scenario-bear"><strong>🐻 Bear Case</strong><br>'
+                        f'<span style="font-size:1.4rem;font-weight:700;color:#DC2626">${bear_12:,.0f}</span><br>'
+                        f'<small>Probability: {bear_prob*100:.0f}%</small></div>', unsafe_allow_html=True)
+        with sc2:
+            st.markdown(f'<div class="scenario-base"><strong>📌 Base Case</strong><br>'
+                        f'<span style="font-size:1.4rem;font-weight:700;color:#2563EB">${base_12:,.0f}</span><br>'
+                        f'<small>Probability: {base_prob*100:.0f}%</small></div>', unsafe_allow_html=True)
+        with sc3:
+            st.markdown(f'<div class="scenario-bull"><strong>🚀 Bull Case</strong><br>'
+                        f'<span style="font-size:1.4rem;font-weight:700;color:#16A34A">${bull_12:,.0f}</span><br>'
+                        f'<small>Probability: {bull_prob*100:.0f}%</small></div>', unsafe_allow_html=True)
+
+        # Decision Rule
+        decision_rule = forecast_summary.get('decision_rule', '')
+        if decision_rule:
+            dr_label = {"en":f"💡 **Decision Rule:** {decision_rule}",
+                        "ar":f"💡 **قاعدة القرار:** {decision_rule}",
+                        "fr":f"💡 **Règle de Décision:** {decision_rule}"}
+            st.info(dr_label.get(lang, dr_label["en"]))
+
+        st.divider()
 
         col1,col2,col3 = st.columns(3)
         with col1: st.metric(T["next_4"],  f"${forecast_summary['next_4_weeks']:,.0f}")
@@ -582,56 +599,76 @@ if st.session_state.analyzed:
         future       = forecast[forecast['ds'] > prophet_data['ds'].max()]
 
         fig5 = go.Figure()
-        fig5.add_trace(go.Scatter(
-            x=prophet_data['ds'], y=prophet_data['y'],
+        fig5.add_trace(go.Scatter(x=prophet_data['ds'], y=prophet_data['y'],
             line=dict(color='#2563EB', width=1.5), name=T["historical"],
-            hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'
-        ))
-        fig5.add_trace(go.Scatter(
-            x=future['ds'], y=future['yhat_upper'],
-            line=dict(width=0), showlegend=False,
-            hoverinfo='skip', fillcolor='rgba(220,38,38,0.1)', fill=None
-        ))
-        fig5.add_trace(go.Scatter(
-            x=future['ds'], y=future['yhat_lower'],
-            fill='tonexty', fillcolor='rgba(220,38,38,0.1)',
-            line=dict(width=0), showlegend=False, hoverinfo='skip'
-        ))
-        fig5.add_trace(go.Scatter(
-            x=future['ds'], y=future['yhat'],
-            line=dict(color='#DC2626', width=2.5, dash='dash'), name=T["forecast_label"],
-            hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'
-        ))
-        fig5.add_vline(
-            x=prophet_data['ds'].max(), line_color='gray',
-            line_width=1, line_dash='dot',
-            annotation_text="Forecast start", annotation_position="top"
-        )
-        fig5.update_layout(
-            title=chart_title(T["forecast_title"]),
-            height=500, hovermode='x unified',
-            legend=dict(orientation='h', yanchor='bottom', y=1.02),
+            hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'))
+        fig5.add_trace(go.Scatter(x=future['ds'], y=future['yhat_upper'],
+            line=dict(width=0), showlegend=False, hoverinfo='skip', fill=None))
+        fig5.add_trace(go.Scatter(x=future['ds'], y=future['yhat_lower'],
+            fill='tonexty', fillcolor='rgba(22,163,74,0.08)',
+            line=dict(width=0), showlegend=True, hoverinfo='skip', name='Scenario Range'))
+        fig5.add_trace(go.Scatter(x=future['ds'], y=future['yhat'],
+            line=dict(color='#0D7377', width=2.5, dash='dash'), name='Base Case',
+            hovertemplate='%{x}<br>Base: $%{y:,.0f}<extra></extra>'))
+        fig5.add_trace(go.Scatter(x=future['ds'], y=future['yhat_lower'],
+            line=dict(color='#DC2626', width=1, dash='dot'), name='Bear Case',
+            hovertemplate='%{x}<br>Bear: $%{y:,.0f}<extra></extra>'))
+        fig5.add_trace(go.Scatter(x=future['ds'], y=future['yhat_upper'],
+            line=dict(color='#16A34A', width=1, dash='dot'), name='Bull Case',
+            hovertemplate='%{x}<br>Bull: $%{y:,.0f}<extra></extra>'))
+        fig5.add_vline(x=prophet_data['ds'].max(), line_color='gray',
+            line_width=1, line_dash='dot', annotation_text="Forecast start", annotation_position="top")
+        fig5.update_layout(title=chart_title(T["forecast_title"]), height=500,
+            hovermode='x unified', legend=dict(orientation='h', yanchor='bottom', y=1.02),
             yaxis=dict(tickprefix='$', tickformat=',.0f'),
             plot_bgcolor='white', paper_bgcolor='white',
-            xaxis_gridcolor='#F3F4F6', yaxis_gridcolor='#F3F4F6'
-        )
+            xaxis_gridcolor='#F3F4F6', yaxis_gridcolor='#F3F4F6')
         st.plotly_chart(fig5, use_container_width=True)
-        st.info(f"{T['peak_info']} **{forecast_summary['peak_week']}** → **${forecast_summary['peak_expected_sales']:,.0f}**")
 
-    # ── Tab 5: Performance Overview ────────────────────────
+        # Peak Date Validation
+        today = pd.Timestamp.now().normalize()
+        peak_date_str = forecast_summary['peak_week']
+        try:
+            peak_dt = pd.Timestamp(peak_date_str)
+            is_past = peak_dt < today
+        except Exception:
+            is_past = False
+
+        if is_past:
+            peak_warn = {
+                "en": f"⚠️ **Note:** The projected peak date ({peak_date_str}) has already passed. The next peak is being re-estimated from remaining forecast periods.",
+                "ar": f"⚠️ **ملاحظة:** تاريخ الذروة ({peak_date_str}) قد مضى. يتم إعادة تقدير الذروة القادمة.",
+                "fr": f"⚠️ **Note:** La date de pic ({peak_date_str}) est déjà passée. Le prochain pic est en réévaluation.",
+            }
+            st.warning(peak_warn.get(lang, peak_warn["en"]))
+        else:
+            st.info(f"{T['peak_info']} **{peak_date_str}** → **${forecast_summary['peak_expected_sales']:,.0f}**")
+
+        # Leading Indicators
+        indicators = forecast_summary.get('leading_indicators', [])
+        if indicators:
+            st.divider()
+            li_title = {"en":"📡 Leading Indicators — Validate the Forecast",
+                        "ar":"📡 مؤشرات قيادية — للتحقق من التوقعات",
+                        "fr":"📡 Indicateurs Avancés — Valider la Prévision"}
+            st.subheader(li_title.get(lang, li_title["en"]))
+            li_caption = {"en":"Monitor these signals weekly to confirm or revise the forecast before committing resources.",
+                          "ar":"راقب هذه الإشارات أسبوعياً قبل تخصيص الموارد.",
+                          "fr":"Surveillez ces signaux chaque semaine avant d'engager des ressources."}
+            st.caption(li_caption.get(lang, li_caption["en"]))
+            for ind in indicators:
+                with st.expander(f"📌 {ind['signal']} — Target: {ind['target']}"):
+                    st.markdown(f"**Metric:** {ind['metric']}")
+                    st.markdown(f"**Alert:** {ind['alert']}")
+                    st.markdown(f"**Action if triggered:** {ind['action']}")
+
+    # ── Tab 5: Performance Overview ───────────────────────
     with tab4:
-        perf_titles = {
-            "en": "💬 Performance Overview",
-            "ar": "💬 نظرة الأداء",
-            "fr": "💬 Aperçu Performance",
-        }
+        perf_titles = {"en":"💬 Performance Overview","ar":"💬 نظرة الأداء","fr":"💬 Aperçu Performance"}
         st.subheader(perf_titles.get(lang,"💬 Performance Overview"))
-
-        captions = {
-            "en": "Ask anything about your sales data — get instant insights",
-            "ar": "اسأل أي شيء عن بيانات مبيعاتك — احصل على رؤى فورية",
-            "fr": "Posez n'importe quelle question sur vos données de ventes",
-        }
+        captions = {"en":"Ask anything about your sales data — get instant insights",
+                    "ar":"اسأل أي شيء عن بيانات مبيعاتك — احصل على رؤى فورية",
+                    "fr":"Posez n'importe quelle question sur vos données de ventes"}
         st.caption(captions.get(lang, captions["en"]))
 
         for message in st.session_state.chat_history:
@@ -639,22 +676,14 @@ if st.session_state.analyzed:
                 st.markdown(message["content"])
 
         if len(st.session_state.chat_history) == 0:
-            init_labels = {
-                "en": "🔍 Generating performance overview...",
-                "ar": "🔍 جاري توليد نظرة الأداء...",
-                "fr": "🔍 Génération de l'aperçu performance...",
-            }
+            init_labels = {"en":"🔍 Generating performance overview...","ar":"🔍 جاري توليد نظرة الأداء...","fr":"🔍 Génération de l'aperçu..."}
             with st.spinner(init_labels.get(lang, init_labels["en"])):
                 from src.agent import ask_agent
                 answer, history = ask_agent(T["auto_question"], st.session_state.system_prompt, [])
                 st.session_state.chat_history = history
                 st.rerun()
 
-        placeholders = {
-            "en": "Ask about your sales data...",
-            "ar": "اسأل عن بيانات مبيعاتك...",
-            "fr": "Posez une question sur vos données...",
-        }
+        placeholders = {"en":"Ask about your sales data...","ar":"اسأل عن بيانات مبيعاتك...","fr":"Posez une question sur vos données..."}
         if question := st.chat_input(placeholders.get(lang, placeholders["en"])):
             from src.agent import stream_agent
             with st.chat_message("user"):
