@@ -1789,13 +1789,12 @@ def _segment_analysis(story, S, ctx, store_df, group_col, company_name, lang, sc
     story.append(PageBreak())
 
 
-# ── NEW: Statistical Validation Section ───────────────────
 def _statistical_validation(story, S, ctx, stat_results, lang):
     titles = {
         'en':("07","Statistical Validation & Correlations"),
         'ar':("07","التحقق الإحصائي والارتباطات"),
         'fr':("07","Validation Statistique & Corrélations"),
-    }.get(lang,("07","Statistical Validation & Corrélations"))
+    }.get(lang,("07","Statistical Validation & Correlations"))
     _section_header(story, titles[0], titles[1], S, lang)
 
     intro = {
@@ -1819,15 +1818,34 @@ def _statistical_validation(story, S, ctx, stat_results, lang):
         vars_   = [d['variable'] for d in corr_details]
         r_vals  = [d['r'] for d in corr_details]
         bar_clrs= [mpl('chart_pos') if r>0 else mpl('chart_neg') for r in r_vals]
-        bars    = ax.barh(vars_, r_vals, color=bar_clrs, height=0.5, edgecolor='white', linewidth=0.3)
+        bars    = ax.barh(vars_, r_vals, color=bar_clrs, height=0.5,
+                          edgecolor='white', linewidth=0.3)
+
+        # FIX: Build p_str without nested f-string quotes
         for bar, d in zip(bars, corr_details):
-            p_str = f"r={d['r']:.4f}, p={'<0.001' if d['p_value'] is not None and d['p_value']<0.001 else f'{d[\"p_value\"]}' if d['p_value'] is not None else 'N/A'}"
-            ax.text(bar.get_width()+(0.01 if bar.get_width()>=0 else -0.01),
-                    bar.get_y()+bar.get_height()/2,
-                    p_str, va='center', ha='left' if bar.get_width()>=0 else 'right', fontsize=7.5)
+            if d['p_value'] is not None and d['p_value'] < 0.001:
+                p_label = '<0.001'
+            elif d['p_value'] is not None:
+                p_label = str(d['p_value'])
+            else:
+                p_label = 'N/A'
+            p_str = f"r={d['r']:.4f}, p={p_label}"
+
+            ax.text(
+                bar.get_width() + (0.01 if bar.get_width() >= 0 else -0.01),
+                bar.get_y() + bar.get_height() / 2,
+                p_str,
+                va='center',
+                ha='left' if bar.get_width() >= 0 else 'right',
+                fontsize=7.5
+            )
+
         ax.axvline(x=0, color=CH['gray_dark'], linewidth=0.7)
         ax.set_xlabel("Pearson Coefficient (r)", fontsize=9)
-        ax.set_title("Correlation Analysis — External Variables vs Revenue", fontsize=10, fontweight='bold', color=mpl('chart1'), pad=10)
+        ax.set_title(
+            "Correlation Analysis — External Variables vs Revenue",
+            fontsize=10, fontweight='bold', color=mpl('chart1'), pad=10
+        )
         ax.set_xlim(-1, 1.2)
         ax.spines['left'].set_color(CH['border'])
         ax.spines['bottom'].set_color(CH['border'])
@@ -1839,8 +1857,14 @@ def _statistical_validation(story, S, ctx, stat_results, lang):
         hdr = ["Variable", "Pearson r", "P-Value", "Sample (n)", "Strength", "Significance"]
         rows = [hdr]
         for d in corr_details:
-            p_display = f"<0.001" if d['p_value'] is not None and d['p_value'] < 0.001 \
-                        else f"{d['p_value']:.4f}" if d['p_value'] is not None else "N/A"
+            # FIX: Build p_display without nested quotes
+            if d['p_value'] is not None and d['p_value'] < 0.001:
+                p_display = "<0.001"
+            elif d['p_value'] is not None:
+                p_display = f"{d['p_value']:.4f}"
+            else:
+                p_display = "N/A"
+
             sig_short = "✅ Significant" if d['significant'] else "❌ Not Significant"
             rows.append([
                 d['variable'],
@@ -1851,16 +1875,25 @@ def _statistical_validation(story, S, ctx, stat_results, lang):
                 sig_short,
             ])
         _pro_table(story, rows,
-                   col_widths=[1.3*inch,0.9*inch,0.9*inch,0.9*inch,1.1*inch,1.8*inch],
+                   col_widths=[1.3*inch, 0.9*inch, 0.9*inch, 0.9*inch, 1.1*inch, 1.8*inch],
                    lang=lang)
 
         # Interpretation callouts
         for d in corr_details:
             if d['significant']:
-                p_str   = f"<0.001" if d['p_value'] is not None and d['p_value']<0.001 else f"{d['p_value']:.4f}" if d['p_value'] is not None else "N/A"
-                interp  = (
-                    f"<b>{d['variable']}</b>: r = {d['r']:+.4f} | P-value: {p_str} | "
-                    f"n = {d['n']:,} | Strength: {d['strength']} ({d['direction']}) | "
+                # FIX: Build p_str cleanly
+                if d['p_value'] is not None and d['p_value'] < 0.001:
+                    p_str_interp = "<0.001"
+                elif d['p_value'] is not None:
+                    p_str_interp = f"{d['p_value']:.4f}"
+                else:
+                    p_str_interp = "N/A"
+
+                interp = (
+                    f"<b>{d['variable']}</b>: r = {d['r']:+.4f} | "
+                    f"P-value: {p_str_interp} | "
+                    f"n = {d['n']:,} | "
+                    f"Strength: {d['strength']} ({d['direction']}) | "
                     f"Interpretation: {d['sig_label']}. "
                     f"[INFERRED: This statistical association suggests {d['variable'].lower()} "
                     f"co-varies with revenue. Causal mechanism requires further investigation. "
@@ -1875,8 +1908,10 @@ def _statistical_validation(story, S, ctx, stat_results, lang):
         story.append(Spacer(1, 0.1*inch))
         story.append(Paragraph(process_text("Distribution Normality Test", lang), S['h2']))
         norm_txt = (
-            f"<b>{normality['test']} Test:</b> W = {normality['statistic']}, "
-            f"p = {normality['p_value']} — {normality['note']}. "
+            f"<b>{normality['test']} Test:</b> "
+            f"W = {normality['statistic']}, "
+            f"p = {normality['p_value']} — "
+            f"{normality['note']}. "
             f"[Non-normal distributions validate the use of median-based central tendency "
             f"and recommend non-parametric statistical methods for further analysis.]"
         )
