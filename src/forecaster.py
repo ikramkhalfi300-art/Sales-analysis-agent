@@ -174,6 +174,43 @@ def train_and_forecast(
     )
     weekly.columns = ['ds', 'y']
     weekly = weekly.dropna(subset=['y'])
+    weekly = weekly[weekly['y'] > 0].reset_index(drop=True)
+
+    # ── Guard: empty data ─────────────────────────────────
+    if len(weekly) == 0:
+        empty_fc = pd.DataFrame(columns=['ds','yhat','yhat_lower','yhat_upper'])
+        empty_fc.attrs['scenarios']  = {}
+        empty_fc.attrs['cv_pct']     = 0
+        empty_fc.attrs['avg_hist']   = 0
+        empty_fc.attrs['peak_hist']  = 0
+        empty_fc.attrs['confidence'] = 'Low'
+        empty_fc.attrs['volatility'] = {
+            'level': 'Unknown', 'risk': 'No valid data available',
+            'badge': '❓', 'cv_pct': 0
+        }
+        empty_fc.attrs['sanity'] = {
+            'passed': False,
+            'warnings': ['No valid sales data found after cleaning.']
+        }
+        return empty_fc, pd.DataFrame(columns=['ds','y'])
+
+    # ── Guard: too few records ────────────────────────────
+    if len(weekly) < 3:
+        empty_fc = pd.DataFrame(columns=['ds','yhat','yhat_lower','yhat_upper'])
+        empty_fc.attrs['scenarios']  = {}
+        empty_fc.attrs['cv_pct']     = 0
+        empty_fc.attrs['avg_hist']   = float(weekly['y'].mean()) if len(weekly) > 0 else 0
+        empty_fc.attrs['peak_hist']  = float(weekly['y'].max())  if len(weekly) > 0 else 0
+        empty_fc.attrs['confidence'] = 'Low'
+        empty_fc.attrs['volatility'] = {
+            'level': 'Unknown', 'risk': 'Insufficient data for forecasting',
+            'badge': '❓', 'cv_pct': 0
+        }
+        empty_fc.attrs['sanity'] = {
+            'passed': False,
+            'warnings': [f'Insufficient data: only {len(weekly)} periods found. Minimum 3 required.']
+        }
+        return empty_fc, weekly
 
     series = weekly.set_index('ds')['y']
     try:
@@ -183,32 +220,92 @@ def train_and_forecast(
 
     n           = len(series)
     avg_hist    = float(series.mean())
-    std_hist    = float(series.std()) if series.std() > 0 else 1.0
+    std_hist    = float(series.std()) if len(series) > 1 and series.std() > 0 else 1.0
     peak_hist   = float(series.max())
     cv_pct      = (std_hist / avg_hist * 100) if avg_hist > 0 else 0
     last_date   = weekly['ds'].max()
 
     # ── Train model ───────────────────────────────────────
+    model = None
     try:
         if n >= 104:
-            model = ExponentialSmoothing(series, trend='add', seasonal='add', seasonal_periods=52).fit(optimized=True)
+            model = ExponentialSmoothing(
+                series, trend='add', seasonal='add', seasonal_periods=52
+            ).fit(optimized=True)
         elif n >= 26:
-            model = ExponentialSmoothing(series, trend='add', seasonal='add', seasonal_periods=26).fit(optimized=True)
+            model = ExponentialSmoothing(
+                series, trend='add', seasonal='add', seasonal_periods=26
+            ).fit(optimized=True)
+        elif n >= 4:
+            model = ExponentialSmoothing(
+                series, trend='add', seasonal=None
+            ).fit(optimized=True)
         else:
-            model = ExponentialSmoothing(series, trend='add', seasonal=None).fit(optimized=True)
+            model = ExponentialSmoothing(
+                series, trend=None, seasonal=None
+            ).fit(optimized=True)
     except Exception:
         try:
-            model = ExponentialSmoothing(series, trend='add', seasonal=None).fit(optimized=True)
+            model = ExponentialSmoothing(
+                series, trend='add', seasonal=None
+            ).fit(optimized=True)
         except Exception:
-            model = ExponentialSmoothing(series, trend=None, seasonal=None).fit(optimized=True)
+            try:
+                model = ExponentialSmoothing(
+                    series, trend=None, seasonal=None
+                ).fit(optimized=True)
+            except Exception as e:
+                # Last resort: return simple mean forecast
+                avg_val      = float(series.mean())
+                try:
+                    future_dates = pd.date_range(
+                        start=pd.Timestamp(last_date) + pd.Timedelta(weeks=1),
+                        periods=weeks, freq='W'
+                    )
+                except Exception:
+                    future_dates = pd.date_range(
+                        start=pd.Timestamp.now() + pd.Timedelta(weeks=1),
+                        periods=weeks, freq='W'
+                    )
+                forecast_df = pd.DataFrame({
+                    'ds':         future_dates,
+                    'yhat':       [avg_val] * weeks,
+                    'yhat_lower': [avg_val * 0.75] * weeks,
+                    'yhat_upper': [avg_val * 1.25] * weeks,
+                })
+                historical   = weekly.copy()
+                full_forecast = pd.concat([
+                    historical.rename(columns={'y':'yhat'})[['ds','yhat']].assign(
+                        yhat_lower=lambda x: x['yhat'],
+                        yhat_upper=lambda x: x['yhat']
+                    ),
+                    forecast_df[['ds','yhat','yhat_lower','yhat_upper']],
+                ], ignore_index=True)
+                full_forecast.attrs['scenarios']  = {}
+                full_forecast.attrs['cv_pct']     = cv_pct
+                full_forecast.attrs['avg_hist']   = avg_hist
+                full_forecast.attrs['peak_hist']  = peak_hist
+                full_forecast.attrs['confidence'] = 'Low'
+                full_forecast.attrs['volatility'] = classify_volatility(cv_pct)
+                full_forecast.attrs['sanity']     = {
+                    'passed': False,
+                    'warnings': [f'Model fitting failed: {str(e)}. Using mean forecast as fallback.']
+                }
+                return full_forecast, historical
 
     # ── Generate forecast ─────────────────────────────────
     forecast_values = model.forecast(weeks)
 
     try:
-        future_dates = pd.date_range(start=last_date + pd.Timedelta(weeks=1), periods=weeks, freq='W')
+        future_dates = pd.date_range(
+            start=last_date + pd.Timedelta(weeks=1),
+            periods=weeks, freq='W'
+        )
     except Exception:
-        future_dates = pd.date_range(start=pd.Timestamp(last_date) + pd.Timedelta(weeks=1), periods=weeks, freq='W')
+        future_dates = pd.date_range(
+            start=pd.Timestamp(last_date) + pd.Timedelta(weeks=1),
+            periods=weeks, freq='W'
+        )
 
     # ── Build scenarios ───────────────────────────────────
     scenarios = build_scenarios(forecast_values.values, std_hist, cv_pct)
@@ -223,14 +320,14 @@ def train_and_forecast(
     # ── Date validation ───────────────────────────────────
     forecast_df = validate_forecast_dates(forecast_df, pd.Timestamp(last_date))
 
-    # ── Build full timeline for charting ──────────────────
-    historical = weekly.copy()
+    # ── Build full timeline ───────────────────────────────
+    historical    = weekly.copy()
     full_forecast = pd.concat([
-        historical.rename(columns={'y': 'yhat'})[['ds', 'yhat']].assign(
+        historical.rename(columns={'y':'yhat'})[['ds','yhat']].assign(
             yhat_lower=lambda x: x['yhat'],
             yhat_upper=lambda x: x['yhat']
         ),
-        forecast_df[['ds', 'yhat', 'yhat_lower', 'yhat_upper']],
+        forecast_df[['ds','yhat','yhat_lower','yhat_upper']],
     ], ignore_index=True)
 
     # ── Attach metadata ───────────────────────────────────
@@ -240,7 +337,9 @@ def train_and_forecast(
     full_forecast.attrs['peak_hist']  = peak_hist
     full_forecast.attrs['confidence'] = compute_confidence_level(n, cv_pct, has_qa_errors)
     full_forecast.attrs['volatility'] = classify_volatility(cv_pct)
-    full_forecast.attrs['sanity']     = sanity_check_forecast(float(forecast_values.mean()), avg_hist, peak_hist)
+    full_forecast.attrs['sanity']     = sanity_check_forecast(
+        float(forecast_values.mean()), avg_hist, peak_hist
+    )
 
     return full_forecast, historical
 
@@ -249,6 +348,20 @@ def train_and_forecast(
 # FORECAST SUMMARY
 # ═══════════════════════════════════════════════════════════
 def get_forecast_summary(forecast: pd.DataFrame, group_col_avg: float = None) -> dict:
+    # Guard: empty forecast
+    if forecast is None or len(forecast) == 0:
+        return {
+            'next_4_weeks': 0, 'next_8_weeks': 0, 'next_12_weeks': 0,
+            'peak_week': 'N/A', 'peak_expected_sales': 0,
+            'bear_12_weeks': 0, 'bull_12_weeks': 0,
+            'bear_probability': 0.25, 'base_probability': 0.55, 'bull_probability': 0.20,
+            'confidence_level': 'Low',
+            'volatility': {'level': 'Unknown', 'risk': 'No data', 'badge': '❓', 'cv_pct': 0},
+            'sanity_check': {'passed': False, 'warnings': ['No forecast data available']},
+            'cv_pct': 0, 'avg_historical': 0,
+            'leading_indicators': [], 'decision_rule': '',
+        }
+
     today  = pd.Timestamp.now().normalize()
     future = forecast[forecast['ds'] > forecast['ds'].max()].copy()
 
