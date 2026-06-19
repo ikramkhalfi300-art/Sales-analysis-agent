@@ -633,20 +633,51 @@ _FORBIDDEN = [
 ]
 
 def validate_report_data(ai_text: str, ctx: dict) -> dict:
-    errors     = []
+    errors = []
     text_lower = ai_text.lower()
+    
+    # التحقق من الكلمات المحظورة
     for pattern in _FORBIDDEN:
         if re.search(pattern, text_lower):
-            errors.append({'error': f"Flagged: '{pattern}'",
-                           'impact': 'Low', 'action': 'Removed in correction pass'})
-    years_in_text   = set(re.findall(r'\b(19|20)\d{2}\b', ai_text))
-    actual_year_min = int(ctx['date_min'][:4])
+            errors.append({
+                'error': f"Flagged: '{pattern}'",
+                'impact': 'Low',
+                'action': 'Removed in correction pass'
+            })
+            
+    # استخراج السنوات المذكورة في النص (مثل 2024، 2025، 2026...)
+    years_in_text = set(re.findall(r'\b(19|20)\d{2}\b', ai_text))
+    
+    # ─── تعديل آمن لاستخراج السنة الدنيا (actual_year_min) ───
+    date_min_val = ctx.get('date_min')
+    if hasattr(date_min_val, 'year'):  # إذا كان كائن تاريخ حقيقي
+        actual_year_min = date_min_val.year
+    else:  # إذا كان نصاً أو نوعاً آخر
+        try:
+            actual_year_min = int(str(date_min_val)[:4])
+        except (ValueError, TypeError):
+            actual_year_min = 2000  # قيمة احتياطية افتراضية
+            
+    # ─── تعديل آمن لاستخراج سنة التقرير (report_year) ───
+    report_year_val = ctx.get('report_year')
+    if hasattr(report_year_val, 'year'):
+        report_year = report_year_val.year
+    else:
+        try:
+            report_year = int(str(report_year_val)[:4])
+        except (ValueError, TypeError):
+            report_year = 2026  # قيمة احتياطية افتراضية
+
+    # التحقق من منطقية السنوات المذكورة في النص
     for yr in years_in_text:
-        if int(yr) < actual_year_min or int(yr) > int(ctx['report_year'])+1:
-            errors.append({'error': f"Year {yr} outside data range",
-                           'impact': 'Medium',
-                           'action': f"Periods outside {actual_year_min}–{ctx['report_year']} excluded"})
-    return {'passed': len(errors)==0, 'errors': errors}
+        if int(yr) < actual_year_min or int(yr) > report_year + 1:
+            errors.append({
+                'error': f"Year {yr} outside data range",
+                'impact': 'Medium',
+                'action': f"Periods outside {actual_year_min}-{report_year} excluded"
+            })
+            
+    return {'passed': len(errors) == 0, 'errors': errors}
 
 
 def run_quality_pipeline(ai_text, ctx, system_prompt="", ask_agent_fn=None, max_iterations=2):
