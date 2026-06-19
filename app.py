@@ -204,9 +204,15 @@ if analyze_btn and uploaded_file and date_col and sales_col:
         numeric_cols = [c for c in df.select_dtypes(include='number').columns if c != sales_col]
         corr_series  = df[[sales_col]+numeric_cols].corr()[sales_col].drop(sales_col).round(4) if numeric_cols else None
 
+            # ── KPI ذكية ──────────────────────────────────────────
         df_kpi = df.copy()
-        df_kpi['period'] = df_kpi[date_col].dt.to_period(freq)
-        period_totals = df_kpi.groupby('period')[sales_col].sum().reset_index().sort_values('period')
+        try:
+            df_kpi['period'] = df_kpi[date_col].dt.to_period(freq)
+            period_totals = df_kpi.groupby('period')[sales_col].sum().reset_index()
+            period_totals = period_totals.sort_values('period')
+            period_totals = period_totals.dropna(subset=[sales_col])
+        except Exception:
+            period_totals = pd.DataFrame(columns=['period', sales_col])
 
         mom_growth = None
         if len(period_totals) >= 2:
@@ -221,8 +227,13 @@ if analyze_btn and uploaded_file and date_col and sales_col:
             n80    = (cumsum <= total * 0.8).sum() + 1
             pareto_pct = round(n80 / len(store_df) * 100, 1)
 
-        best_period_label  = str(period_totals.loc[period_totals[sales_col].idxmax(), 'period'])
-        worst_period_label = str(period_totals.loc[period_totals[sales_col].idxmin(), 'period'])
+        # FIX: guard against empty period_totals
+        if len(period_totals) > 0 and period_totals[sales_col].notna().any():
+            best_period_label  = str(period_totals.loc[period_totals[sales_col].idxmax(), 'period'])
+            worst_period_label = str(period_totals.loc[period_totals[sales_col].idxmin(), 'period'])
+        else:
+            best_period_label  = 'N/A'
+            worst_period_label = 'N/A'
 
         sales_std  = float(df[sales_col].std())
         sales_mean = float(df[sales_col].mean())
