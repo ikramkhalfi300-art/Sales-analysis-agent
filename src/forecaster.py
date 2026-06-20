@@ -1,14 +1,3 @@
-"""
-forecaster.py — Enhanced Forecasting Engine
-Improvements:
-  1. Three-scenario forecasting (Bear / Base / Bull)
-  2. Leading indicators for forecast validation
-  3. Date validation — peak must be in the future
-  4. Volatility classification with risk warning
-  5. Forecast sanity check — flags >300% growth
-  6. Confidence auto-adjustment based on CV and data quality
-"""
-
 import pandas as pd
 import numpy as np
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
@@ -28,9 +17,10 @@ def classify_volatility(cv_pct: float) -> dict:
 
 # ─── CONFIDENCE ADJUSTER ─────────────────────────────────
 def compute_confidence_level(n_periods: int, cv_pct: float, has_qa_errors: bool = False) -> str:
-    if has_qa_errors or cv_pct > 60 or n_periods < 20:
+    # FIX 3: cv > 40 → Medium (was cv > 35), cv > 55 → Low (was cv > 60)
+    if has_qa_errors or cv_pct > 55 or n_periods < 20:
         return "Low"
-    elif cv_pct > 35 or n_periods < 52:
+    elif cv_pct > 40 or n_periods < 52:
         return "Medium"
     else:
         return "High"
@@ -112,7 +102,12 @@ def build_scenarios(yhat: np.ndarray, std: float, cv_pct: float) -> dict:
 
 # ─── LEADING INDICATORS ──────────────────────────────────
 def build_leading_indicators(forecast_df: pd.DataFrame, avg_historical: float, group_col_avg: float = None) -> list:
-    future = forecast_df[~forecast_df.get('is_past', pd.Series(False, index=forecast_df.index))]
+    # فلتر الصفوف المستقبلية فقط
+    if 'is_past' in forecast_df.columns:
+        future = forecast_df[~forecast_df['is_past']].copy()
+    else:
+        future = forecast_df.copy()
+
     if len(future) < 3:
         return []
 
@@ -129,7 +124,7 @@ def build_leading_indicators(forecast_df: pd.DataFrame, avg_historical: float, g
         },
         {
             "signal":  "Period Average Check",
-            "metric":  "Average weekly revenue",
+            "metric":  "Average revenue per period",
             "target":  f"${weekly_target:,.0f}/period",
             "alert":   f"If drops below ${weekly_target * 0.80:,.0f} → pricing or volume signal",
             "action":  "Review segment performance and check for demand erosion",
@@ -146,7 +141,7 @@ def build_leading_indicators(forecast_df: pd.DataFrame, avg_historical: float, g
     if group_col_avg is not None:
         indicators.append({
             "signal":  "Top Segment Health",
-            "metric":  "Top segment weekly average",
+            "metric":  "Top segment average per period",
             "target":  f">${group_col_avg * 0.90:,.0f}/period",
             "alert":   f"Drop below ${group_col_avg * 0.75:,.0f} → pricing pressure signal",
             "action":  "Audit top segment pricing and competitive positioning immediately",
@@ -179,11 +174,12 @@ def train_and_forecast(
     # ── Guard: empty data ─────────────────────────────────
     if len(weekly) == 0:
         empty_fc = pd.DataFrame(columns=['ds','yhat','yhat_lower','yhat_upper'])
-        empty_fc.attrs['scenarios']  = {}
-        empty_fc.attrs['cv_pct']     = 0
-        empty_fc.attrs['avg_hist']   = 0
-        empty_fc.attrs['peak_hist']  = 0
-        empty_fc.attrs['confidence'] = 'Low'
+        empty_fc.attrs['scenarios']         = {}
+        empty_fc.attrs['cv_pct']            = 0
+        empty_fc.attrs['avg_hist']          = 0
+        empty_fc.attrs['peak_hist']         = 0
+        empty_fc.attrs['confidence']        = 'Low'
+        empty_fc.attrs['last_historical_date'] = pd.Timestamp.now()
         empty_fc.attrs['volatility'] = {
             'level': 'Unknown', 'risk': 'No valid data available',
             'badge': '❓', 'cv_pct': 0
@@ -197,11 +193,12 @@ def train_and_forecast(
     # ── Guard: too few records ────────────────────────────
     if len(weekly) < 3:
         empty_fc = pd.DataFrame(columns=['ds','yhat','yhat_lower','yhat_upper'])
-        empty_fc.attrs['scenarios']  = {}
-        empty_fc.attrs['cv_pct']     = 0
-        empty_fc.attrs['avg_hist']   = float(weekly['y'].mean()) if len(weekly) > 0 else 0
-        empty_fc.attrs['peak_hist']  = float(weekly['y'].max())  if len(weekly) > 0 else 0
-        empty_fc.attrs['confidence'] = 'Low'
+        empty_fc.attrs['scenarios']         = {}
+        empty_fc.attrs['cv_pct']            = 0
+        empty_fc.attrs['avg_hist']          = float(weekly['y'].mean()) if len(weekly) > 0 else 0
+        empty_fc.attrs['peak_hist']         = float(weekly['y'].max())  if len(weekly) > 0 else 0
+        empty_fc.attrs['confidence']        = 'Low'
+        empty_fc.attrs['last_historical_date'] = weekly['ds'].max() if len(weekly) > 0 else pd.Timestamp.now()
         empty_fc.attrs['volatility'] = {
             'level': 'Unknown', 'risk': 'Insufficient data for forecasting',
             'badge': '❓', 'cv_pct': 0
@@ -223,7 +220,7 @@ def train_and_forecast(
     std_hist    = float(series.std()) if len(series) > 1 and series.std() > 0 else 1.0
     peak_hist   = float(series.max())
     cv_pct      = (std_hist / avg_hist * 100) if avg_hist > 0 else 0
-    last_date   = weekly['ds'].max()
+    last_date   = weekly['ds'].max()  # ← حفظ آخر تاريخ تاريخي
 
     # ── Train model ───────────────────────────────────────
     model = None
@@ -273,7 +270,7 @@ def train_and_forecast(
                     'yhat_lower': [avg_val * 0.75] * weeks,
                     'yhat_upper': [avg_val * 1.25] * weeks,
                 })
-                historical   = weekly.copy()
+                historical    = weekly.copy()
                 full_forecast = pd.concat([
                     historical.rename(columns={'y':'yhat'})[['ds','yhat']].assign(
                         yhat_lower=lambda x: x['yhat'],
@@ -281,13 +278,14 @@ def train_and_forecast(
                     ),
                     forecast_df[['ds','yhat','yhat_lower','yhat_upper']],
                 ], ignore_index=True)
-                full_forecast.attrs['scenarios']  = {}
-                full_forecast.attrs['cv_pct']     = cv_pct
-                full_forecast.attrs['avg_hist']   = avg_hist
-                full_forecast.attrs['peak_hist']  = peak_hist
-                full_forecast.attrs['confidence'] = 'Low'
-                full_forecast.attrs['volatility'] = classify_volatility(cv_pct)
-                full_forecast.attrs['sanity']     = {
+                full_forecast.attrs['scenarios']            = {}
+                full_forecast.attrs['cv_pct']               = cv_pct
+                full_forecast.attrs['avg_hist']             = avg_hist
+                full_forecast.attrs['peak_hist']            = peak_hist
+                full_forecast.attrs['confidence']           = 'Low'
+                full_forecast.attrs['last_historical_date'] = pd.Timestamp(last_date)  # ← FIX 1
+                full_forecast.attrs['volatility']           = classify_volatility(cv_pct)
+                full_forecast.attrs['sanity'] = {
                     'passed': False,
                     'warnings': [f'Model fitting failed: {str(e)}. Using mean forecast as fallback.']
                 }
@@ -331,13 +329,14 @@ def train_and_forecast(
     ], ignore_index=True)
 
     # ── Attach metadata ───────────────────────────────────
-    full_forecast.attrs['scenarios']  = scenarios
-    full_forecast.attrs['cv_pct']     = cv_pct
-    full_forecast.attrs['avg_hist']   = avg_hist
-    full_forecast.attrs['peak_hist']  = peak_hist
-    full_forecast.attrs['confidence'] = compute_confidence_level(n, cv_pct, has_qa_errors)
-    full_forecast.attrs['volatility'] = classify_volatility(cv_pct)
-    full_forecast.attrs['sanity']     = sanity_check_forecast(
+    full_forecast.attrs['scenarios']            = scenarios
+    full_forecast.attrs['cv_pct']               = cv_pct
+    full_forecast.attrs['avg_hist']             = avg_hist
+    full_forecast.attrs['peak_hist']            = peak_hist
+    full_forecast.attrs['confidence']           = compute_confidence_level(n, cv_pct, has_qa_errors)
+    full_forecast.attrs['last_historical_date'] = pd.Timestamp(last_date)  # ← FIX 1: حفظ التاريخ
+    full_forecast.attrs['volatility']           = classify_volatility(cv_pct)
+    full_forecast.attrs['sanity']               = sanity_check_forecast(
         float(forecast_values.mean()), avg_hist, peak_hist
     )
 
@@ -362,31 +361,58 @@ def get_forecast_summary(forecast: pd.DataFrame, group_col_avg: float = None) ->
             'leading_indicators': [], 'decision_rule': '',
         }
 
+    # ═══════════════════════════════════════════════════════
+    # FIX 1: الطريقة الصحيحة لفصل الـ forecast عن التاريخي
+    # السطر القديم: forecast['ds'] > forecast['ds'].max()
+    # كان دائماً فارغاً لأن max() لا يوجد شيء أكبر منه
+    # الحل: استخدم last_historical_date المحفوظ في attrs
+    # ═══════════════════════════════════════════════════════
+    last_hist_date = forecast.attrs.get('last_historical_date', None)
+
+    if last_hist_date is not None:
+        # الطريقة الصحيحة: فصل الـ forecast الفعلي عن التاريخي
+        future = forecast[forecast['ds'] > pd.Timestamp(last_hist_date)].copy()
+    else:
+        # Fallback: خذ آخر N صفوف حسب عدد الأسابيع المطلوبة
+        # هذا أفضل من tail(12) الذي يخلط التاريخي بالـ forecast
+        future = forecast.tail(12).copy()
+
+    # إذا كانت كل الفترات في الماضي (بيانات تاريخية قديمة)
     today  = pd.Timestamp.now().normalize()
-    future = forecast[forecast['ds'] > forecast['ds'].max()].copy()
+    future_from_today = future[future['ds'] >= today].copy()
 
-    if len(future) == 0:
-        future = forecast.tail(12).copy()
+    # استخدم الفترات المستقبلية إذا وُجدت، وإلا استخدم كل الـ forecast
+    if len(future_from_today) >= 3:
+        future_for_kpis = future_from_today
+    else:
+        # البيانات كلها قديمة — استخدم الـ forecast rows كاملة
+        future_for_kpis = future
 
-    future = future[future['ds'] >= today]
+    n_future = len(future_for_kpis)
 
-    if len(future) == 0:
-        future = forecast.tail(12).copy()
+    # ═══════════════════════════════════════════════════════
+    # حساب next_4, 8, 12 من صفوف الـ forecast فقط (ليس التاريخي)
+    # ═══════════════════════════════════════════════════════
+    next_4  = float(future_for_kpis.head(min(4,  n_future))['yhat'].sum())
+    next_8  = float(future_for_kpis.head(min(8,  n_future))['yhat'].sum())
+    next_12 = float(future_for_kpis.head(min(12, n_future))['yhat'].sum())
 
-    n_future = len(future)
-
-    next_4  = float(future.head(min(4,  n_future))['yhat'].sum())
-    next_8  = float(future.head(min(8,  n_future))['yhat'].sum())
-    next_12 = float(future.head(min(12, n_future))['yhat'].sum())
-
+    # Bear/Bull من الـ scenarios المحفوظة
     scenarios = forecast.attrs.get('scenarios', {})
-    bear_12   = float(np.sum(scenarios['bear']['values'][:min(12, n_future)])) if scenarios else next_12 * 0.75
-    bull_12   = float(np.sum(scenarios['bull']['values'][:min(12, n_future)])) if scenarios else next_12 * 1.25
+    if scenarios and 'bear' in scenarios and 'bull' in scenarios:
+        bear_vals = scenarios['bear']['values'][:min(12, n_future)]
+        bull_vals = scenarios['bull']['values'][:min(12, n_future)]
+        bear_12   = float(np.sum(bear_vals))
+        bull_12   = float(np.sum(bull_vals))
+    else:
+        bear_12 = next_12 * 0.75
+        bull_12 = next_12 * 1.25
 
-    if len(future) > 0 and future['yhat'].notna().any():
-        peak_idx = future['yhat'].idxmax()
-        peak_dt  = future.loc[peak_idx, 'ds']
-        peak_val = float(future.loc[peak_idx, 'yhat'])
+    # Peak — من صفوف الـ forecast فقط
+    if len(future_for_kpis) > 0 and future_for_kpis['yhat'].notna().any():
+        peak_idx = future_for_kpis['yhat'].idxmax()
+        peak_dt  = future_for_kpis.loc[peak_idx, 'ds']
+        peak_val = float(future_for_kpis.loc[peak_idx, 'yhat'])
     else:
         peak_dt  = today + pd.Timedelta(weeks=4)
         peak_val = 0.0
@@ -396,13 +422,26 @@ def get_forecast_summary(forecast: pd.DataFrame, group_col_avg: float = None) ->
     except Exception:
         peak_str = str(peak_dt)
 
-    cv_pct     = forecast.attrs.get('cv_pct', 0)
-    avg_hist   = forecast.attrs.get('avg_hist', 0)
-    confidence = forecast.attrs.get('confidence', 'Medium')
-    volatility = forecast.attrs.get('volatility', classify_volatility(cv_pct))
-    sanity     = forecast.attrs.get('sanity', {'passed': True, 'warnings': []})
+    # ═══════════════════════════════════════════════════════
+    # FIX 2: Volatility — أعد الحساب مباشرة من cv_pct
+    # لا تثق بـ attrs['volatility'] لأنه قد يكون محسوباً بشكل خاطئ
+    # ═══════════════════════════════════════════════════════
+    cv_pct   = forecast.attrs.get('cv_pct', 0)
+    avg_hist = forecast.attrs.get('avg_hist', 0)
 
-    leading_indicators = build_leading_indicators(future, avg_hist, group_col_avg)
+    # أعد حساب volatility مباشرة — لا تأخذها من attrs
+    volatility = classify_volatility(cv_pct)
+
+    # FIX 3: Confidence — أعد الحساب مع threshold محسّن
+    n_hist     = len(forecast[forecast['ds'] <= pd.Timestamp(last_hist_date)]) if last_hist_date else len(forecast)
+    confidence = compute_confidence_level(n_hist, cv_pct)
+    # لكن خذ من attrs إذا كان موجوداً (يشمل has_qa_errors)
+    confidence = forecast.attrs.get('confidence', confidence)
+
+    sanity = forecast.attrs.get('sanity', {'passed': True, 'warnings': []})
+
+    # Leading indicators من صفوف الـ forecast
+    leading_indicators = build_leading_indicators(future_for_kpis, avg_hist, group_col_avg)
 
     decision_rule = (
         "Plan operations around the BASE CASE. "
