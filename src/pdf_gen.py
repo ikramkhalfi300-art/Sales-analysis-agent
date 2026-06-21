@@ -1434,20 +1434,18 @@ def _trend_analysis(story, S, ctx, monthly_df, company_name, lang):
     ax.set_title(
         (company_name+"  —  " if company_name else "") + "Period Revenue Distribution",
         fontsize=10.5, fontweight='bold', color=mpl('chart1'), pad=10)
-    # FIX 6: Smart x-axis — عرض عدد محدود من التسميات حسب الكثافة
-    n_labels = len(months_str)
-    if n_labels > 24:
-        step = max(1, n_labels // 8)
-        ticks = list(range(0, n_labels, step))
-        ax.set_xticks(ticks)
-        ax.set_xticklabels([months_str[i][:10] for i in ticks],
-                           rotation=45, ha='right', fontsize=6.5)
-    elif n_labels > 12:
-        step = max(1, n_labels // 10)
-        ticks = list(range(0, n_labels, step))
-        ax.set_xticks(ticks)
-        ax.set_xticklabels([months_str[i][:12] for i in ticks],
-                           rotation=40, ha='right', fontsize=7)
+    # FIX: Smart x-axis — عرض عدد محدود من التسميات
+    _n_lbl = len(months_str)
+    if _n_lbl > 24:
+        _step = max(1, _n_lbl // 8)
+        _tks  = list(range(0, _n_lbl, _step))
+        ax.set_xticks(_tks)
+        ax.set_xticklabels([months_str[i][:10] for i in _tks], rotation=45, ha='right', fontsize=6.5)
+    elif _n_lbl > 12:
+        _step = max(1, _n_lbl // 10)
+        _tks  = list(range(0, _n_lbl, _step))
+        ax.set_xticks(_tks)
+        ax.set_xticklabels([months_str[i][:12] for i in _tks], rotation=40, ha='right', fontsize=7)
     else:
         ax.tick_params(axis='x', rotation=30, labelsize=7.5)
     ax.spines['left'].set_color(CH['border'])
@@ -1696,10 +1694,10 @@ def _forecast_section(story, S, ctx, forecast, prophet_data, company_name, lang,
     story.append(Spacer(1,0.12*inch))
     _confidence_badge(story, ctx['confidence_level'], S, lang)
     if ctx['cv_pct'] > 20:
-        # FIX 2: أعد بناء volatility مباشرة من cv_pct — لا تثق بـ ctx['volatility']
-        from src.forecaster import classify_volatility as _cv
-        correct_vol = _cv(ctx['cv_pct'])
-        _volatility_block(story, correct_vol, ctx['cv_pct'], S, lang)
+        # أعد حساب volatility مباشرة من cv_pct
+        from src.forecaster import classify_volatility as _clf_v
+        _correct_vol = _clf_v(ctx['cv_pct'])
+        _volatility_block(story, _correct_vol, ctx['cv_pct'], S, lang)
 
     sanity = ctx.get('sanity_check',{})
     if sanity and not sanity.get('passed',True):
@@ -1966,21 +1964,18 @@ def _growth_opportunities(story, S, ctx, opportunities, lang):
         story.append(PageBreak()); return
 
     # FIX #4: Truncate basis text in table
-    # FIX 5: فصل Confidence عن Basis بوضوح + عرض أعمدة صحيح
     hdr  = ["Opportunity","Est. Impact","Conf.","Effort","Basis / Assumption"]
     rows = [hdr]
     for opp in opportunities:
-        # اقصر basis لأنه يسبب bleeding
-        basis_raw = str(opp['basis'])
-        basis = basis_raw[:50] + ('...' if len(basis_raw) > 50 else '')
-        # confidence قد تحتوي est_impact — نظفها
-        conf_clean = str(opp['confidence']).split('(')[0].strip()
+        _basis_raw = str(opp['basis'])
+        _basis     = _basis_raw[:50] + ('...' if len(_basis_raw) > 50 else '')
+        _conf      = str(opp['confidence']).split('(')[0].strip()
         rows.append([
             str(opp['type'])[:20],
             _money(opp['est_impact']),
-            conf_clean,
+            _conf,
             str(opp['effort'])[:8],
-            basis,
+            _basis,
         ])
     _pro_table(story, rows,
                col_widths=[1.4*inch, 1.0*inch, 0.85*inch, 0.65*inch, CONTENT_W-3.9*inch],
@@ -2056,7 +2051,7 @@ def _recommendations(story, S, ctx, lang):
             'roi':       f"Est. impact: ${ctx['worst_group_12p_cost']:,.0f} "
                          f"[DERIVED: gap × 12 periods]. "
                          f"Est. cost: management time ($500–$1,500). "
-                         (f"ROI: >500x return on management time if successful. " if ctx['worst_group_12p_cost']/max(1500,1)*100 >= 500 else f"ROI: {ctx['worst_group_12p_cost']/max(1500,1)*100:.0f}%+ on management time if successful. ")
+                         f"ROI: {'>500x return' if ctx['worst_group_12p_cost']/max(1500,1)*100 >= 500 else str(round(ctx['worst_group_12p_cost']/max(1500,1)*100))+'%+'} on management time if successful. "
                          f"Payback: <1 period if 30% gap closure achieved.",
             'inaction':  f"${ctx['worst_group_12p_cost']:,.0f} foregone over 12 periods [DERIVED]",
             'conf':      "Medium",
@@ -2104,11 +2099,11 @@ def _recommendations(story, S, ctx, lang):
                 if ctx.get('peak_is_past') else
                 f"Base case projects peak at <b>{ctx['peak_week']}</b> "
                 f"({_money(ctx['peak_fc'])}). "
-                f"[ASSUMPTION: Holt-Winters trend extrapolation]"
+                "[ASSUMPTION: Holt-Winters trend extrapolation]"
             ),
             'hypothesis': (
                 "The historical peak has passed. Focus shifts to tracking whether "
-                "the current trajectory matches Bear/Base/Bull scenarios. "
+                "current trajectory matches Bear/Base/Bull scenarios. "
                 f"Bear: {_money(ctx['bear_12'])} | Base: {_money(ctx['fc12'])} | Bull: {_money(ctx['bull_12'])}. "
                 "[Monitor leading indicators weekly to validate trajectory.]"
                 if ctx.get('peak_is_past') else
@@ -2120,21 +2115,21 @@ def _recommendations(story, S, ctx, lang):
             'owner':    "Sales Manager / Finance Director",
             'deadline':  ctx['action_deadline_7'],
             'first': (
-                f"Set up weekly tracking dashboard: actual vs. Bear/Base/Bull targets. "
-                f"Flag if 2 consecutive periods fall below Bear case ({_money(ctx['bear_12']/12)}/period)"
+                f"Set up weekly tracking: actual vs Bear/Base/Bull. "
+                f"Flag if 2 periods fall below Bear floor ({_money(ctx['bear_12']/12)}/period)"
                 if ctx.get('peak_is_past') else
                 "Confirm inventory levels, staffing capacity, and promotional calendar "
                 "for the projected peak window"
             ),
             'metric': (
-                f"Actual revenue tracks within ±15% of Base case ({_money(ctx['fc12']/12)}/period) "
-                f"for 3 consecutive periods"
+                f"Actual revenue tracks within 15% of Base case ({_money(ctx['fc12']/12)}/period) "
+                "for 3 consecutive periods"
                 if ctx.get('peak_is_past') else
                 f"Capture >= 85% of projected peak revenue ({_money(ctx['peak_fc']*0.85)})"
             ),
             'roi': (
                 f"Scenario range: Bear {_money(ctx['bear_12'])} to Bull {_money(ctx['bull_12'])} "
-                f"over 12 periods. Cost: monitoring dashboard setup ($0–$500). "
+                f"over 12 periods. Cost: monitoring setup ($0-$500). "
                 f"ROI: prevents misallocated resources worth up to {_money(ctx['fc12']*0.20)}."
                 if ctx.get('peak_is_past') else
                 f"Capture opportunity: {_money(ctx['peak_fc'])} [ASSUMPTION: if peak materializes]. "
@@ -2143,20 +2138,19 @@ def _recommendations(story, S, ctx, lang):
             ),
             'inaction': (
                 f"Resource misallocation risk: up to {_money(ctx['fc12']*0.15)} if trajectory "
-                f"diverges from Base case without early detection"
+                "diverges from Base case without early detection"
                 if ctx.get('peak_is_past') else
                 f"Up to {_money(ctx['peak_fc']*0.15)} uncaptured if peak materializes"
             ),
             'conf':      "Medium",
             'conf_basis': (
-                "Confidence: Medium. Historical trend is stable (+0.2% HoH). "
-                "Bear/Base/Bull range provides planning envelope. "
+                "Historical trend is stable. Bear/Base/Bull range provides planning envelope. "
                 "Limited by: dataset ends 2012 — external factors unknown."
                 if ctx.get('peak_is_past') else
                 "Trend momentum supports peak projection. "
                 "Limited by incomplete seasonal cycle (<52 weeks)."
             ),
-            'style':     'green' if not ctx.get('peak_is_past') else 'blue',
+            'style': 'blue' if ctx.get('peak_is_past') else 'green',
         },
     ]
 
@@ -2275,7 +2269,7 @@ def _appendix(story, S, ctx, lang, validation_report=None):
         ("Minimum Period",           f"${ctx['min_value']:,.2f}"),
         ("Revenue Std Dev",          f"${ctx['std_dev']:,.2f}"),
         ("Coeff. of Variation (CV)", f"{ctx['cv_pct']:.1f}%"),
-        ("Volatility Level",         ctx.get('volatility',{}).get('level','N/A') + ' (CV=' + str(ctx.get('cv_pct',0)) + '%)'),
+        ("Volatility Level",         ctx.get('volatility',{}).get('level','N/A')),
         ("Trend Direction",          ctx['trend_direction'].capitalize()),
         ("Trend Change (HoH)",       f"{ctx['trend_pct']:+.1f}%"),
         ("Forecast Confidence",      ctx['confidence_level']),
@@ -2340,13 +2334,13 @@ def _appendix(story, S, ctx, lang, validation_report=None):
         story.append(Spacer(1,0.06*inch))
 
     # QA Report
-    # FIX 7: إخفاء أخطاء تقنية من العميل — رسالة احترافية فقط
+    # FIX: إخفاء أخطاء تقنية — رسالة احترافية فقط
     if validation_report:
         story.append(Spacer(1,0.15*inch))
         story.append(Paragraph(process_text("Quality Assurance Report",lang), S['h2']))
-        iterations = validation_report.get('iterations', 1)
+        _qa_iters = validation_report.get('iterations', 1)
         _callout(story,
-                 f"✅ <b>Quality assurance completed</b> — {iterations} automated review "
+                 f"✅ <b>Quality assurance completed</b> — {_qa_iters} automated review "
                  f"pass(es) applied. All figures verified against the source dataset. "
                  f"Content reviewed for accuracy and consistency before publication.",
                  'green', S, lang)
@@ -2368,13 +2362,13 @@ def _appendix(story, S, ctx, lang, validation_report=None):
             (
                 "Forecast Monitoring" if ctx.get('peak_is_past') else "Peak Preparation",
                 (
-                    f"Track weekly vs Bear/Base/Bull. Base: {_money(ctx['fc12']/12)}/period. "
-                    f"Flag if 2 periods miss Bear floor ({_money(ctx['bear_12']/12)}/period)"
+                    f"Track weekly vs Bear/Base/Bull. Base: {_money(ctx['fc12']/12)}/period"
                     if ctx.get('peak_is_past') else
                     f"Pre-position for {ctx['peak_week']} peak. "
                     f"{ctx['peak_urgency'].get('message','')[:40]}"
                 ),
-                f"+{_money(ctx['peak_fc']*0.08)} [DERIVED: peak×8%]", "Low", "Medium"
+                f"+{_money(ctx['peak_fc']*0.08)} [DERIVED: peak×8%]",
+                "Low", "Medium"
             ),
         ]),
         ("Medium-Term (1–3 Months)", [

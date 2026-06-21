@@ -401,14 +401,13 @@ if st.session_state.analyzed:
 
         st.divider()
 
-        # FIX: اجبر المستخدم على إدخال اسم شركة قبل توليد PDF
-        _pdf_name_warn = {
+        _warn_msgs = {
             "en": "⚠️ Please enter your **Company Name** in the sidebar before generating the report.",
             "ar": "⚠️ الرجاء إدخال **اسم الشركة** في الشريط الجانبي قبل توليد التقرير.",
             "fr": "⚠️ Veuillez saisir le **nom de votre entreprise** avant de générer le rapport.",
         }
         if not cname:
-            st.warning(_pdf_name_warn.get(lang, _pdf_name_warn["en"]))
+            st.warning(_warn_msgs.get(lang, _warn_msgs["en"]))
         elif st.button(T["download_pdf"], type="secondary"):
             with st.spinner(T["generating_pdf"]):
                 from src.pdf_gen import generate_pdf
