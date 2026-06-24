@@ -635,7 +635,8 @@ def extract_dynamic_context(
  
     ctx['confidence_level']   = forecast_summary.get('confidence_level', 'Medium')
     ctx['model_type']         = forecast_summary.get('model_type', 'unknown')
-    ctx['volatility']         = forecast_summary.get('volatility', {})
+    ctx['volatility_badge']   = ctx.get('volatility', {}).get('badge', '🔴')
+    ctx['volatility_risk']    = ctx.get('volatility', {}).get('risk', '')
     ctx['sanity_check']       = forecast_summary.get('sanity_check', {'passed': True, 'warnings': []})
     ctx['leading_indicators'] = forecast_summary.get('leading_indicators', [])
     ctx['decision_rule']      = forecast_summary.get('decision_rule', '')
@@ -667,6 +668,13 @@ def extract_dynamic_context(
     ctx['action_deadline_90'] = (pd.Timestamp.now() + pd.Timedelta(days=90)).strftime('%Y-%m-%d')
     ctx['report_date']        = pd.Timestamp.now().strftime('%d %B %Y')
     ctx['report_year']        = pd.Timestamp.now().strftime('%Y')
+
+    # Flatten volatility dict للتوافق مع الكود القديم
+    _vol = ctx.get('volatility', {})
+    ctx['volatility_level'] = _vol.get('level', 'High')
+    ctx['volatility_badge'] = _vol.get('badge', '🔴')
+    ctx['volatility_risk']  = _vol.get('risk', '')
+    ctx['volatility_color'] = _vol.get('color', 'red')
  
     return ctx
 
@@ -1079,7 +1087,7 @@ def _executive_kpi_dashboard(story, S, ctx, dq, lang):
 
     conf_icon = {"High":"🟢","Medium":"🟡","Low":"🔴"}.get(ctx['confidence_level'],"🟡")
     # FIX-P1: Read volatility level from dict
-    vol_lvl  = ctx['volatility_level']
+    vol_lvl = ctx.get('volatility', {}).get('level', 'High')
     vol_icon = {"Low":"🟢","Moderate":"🟡","High":"🔴","Extreme":"🚨"}.get(vol_lvl,"🔴")
 
     r1 = [
