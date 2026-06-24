@@ -383,45 +383,80 @@ def compute_risk_matrix(ctx) -> list:
 
 
 def compute_growth_opportunities(ctx, store_df, group_col) -> list:
-    opps  = []
-    avg   = ctx.get('avg_per_period', 0)
-    best  = ctx.get('best_group_avg', 0)
-    fc12  = ctx.get('fc12', 0)
-    total = ctx.get('total_revenue', 0)
-
+    opps = []
+    avg  = ctx.get('avg_per_period', 0)
+    best = ctx.get('best_group_avg', 0)
+    fc12 = ctx.get('fc12', 0)
+ 
     if store_df is not None and group_col and avg > 0:
+        # فرصة 1: رفع الوحدات الضعيفة إلى متوسط المحفظة
         bottom_half = store_df[store_df['avg_weekly'] < avg]
         if len(bottom_half) > 0:
-            bottom_mean = float(bottom_half['avg_weekly'].mean())
-            uplift = float((avg - bottom_mean) * len(bottom_half) * 12)
+            avg_gap      = float(avg - bottom_half['avg_weekly'].mean())
+            n_units      = len(bottom_half)
+            # DERIVED: الفجوة الفعلية × عدد الوحدات × 12 فترة (100% gap closure افتراض أقصى)
+            uplift_max   = avg_gap * n_units * 12
+            # نستخدم 50% كسيناريو محافظ
+            uplift_cons  = uplift_max * 0.50
             opps.append({
-                'type': "Efficiency Uplift",
-                'description': "Bring bottom 50% of groups to portfolio average.",
-                'est_impact': max(uplift, 0), 'confidence': "Medium", 'effort': "Medium",
-                'basis': "DERIVED: (avg − grp_avg) × n_groups × 12 periods",
+                'type':        "Efficiency Uplift — Bottom 50% to Average",
+                'description': f"Bring {n_units} below-average units (avg ${bottom_half['avg_weekly'].mean():,.0f}/period) to portfolio average (${avg:,.0f}/period).",
+                'est_impact':  uplift_cons,
+                'confidence':  "Medium",
+                'effort':      "Medium",
+                'basis':       f"DERIVED (50% scenario): (${avg:,.0f} − ${bottom_half['avg_weekly'].mean():,.0f}) × {n_units} units × 12 periods × 50% closure rate. Full closure = ${uplift_max:,.0f}.",
             })
-        if best > avg:
-            replication = float((best - avg) * max(len(store_df)-3, 1) * 12 * 0.3)
+ 
+        # فرصة 2: تكرار نموذج الأفضل
+        if best > avg and len(store_df) > 3:
+            # نطبق نموذج الأفضل على أضعف 3 وحدات — 30% نجاح افتراضي
+            worst3_avg = float(store_df.nsmallest(3, 'avg_weekly')['avg_weekly'].mean())
+            gap_to_best = best - worst3_avg
+            replication = gap_to_best * 3 * 12 * 0.30  # 30% replication rate
             opps.append({
-                'type': "Top Performer Replication",
-                'description': f"Apply Group {ctx.get('best_group','top')} model to similar units.",
-                'est_impact': max(replication, 0), 'confidence': "Low", 'effort': "Low",
-                'basis': "INFERRED: 30% replication rate assumed — validate before committing",
+                'type':        f"Top Performer Replication (Group {ctx.get('best_group','top')})",
+                'description': f"Apply Group {ctx.get('best_group','top')} operational model to bottom 3 units.",
+                'est_impact':  replication,
+                'confidence':  "Low",
+                'effort':      "Medium",
+                'basis':       f"INFERRED (30% replication rate assumed): (${best:,.0f} − ${worst3_avg:,.0f}) × 3 units × 12 periods × 30%. Validate before committing.",
             })
-
+ 
+    # فرصة 3: Bull case upside (مشتقة من البيانات)
     bull_upside = ctx.get('bull_12', fc12) - fc12
     if bull_upside > 0:
+        bull_spread = ctx.get('bull_spread_pct', 25.0)
+        method      = ctx.get('scenario_method', 'unknown')
         opps.append({
-            'type': "Bull Case Upside",
-            'description': "Favorable conditions yield Bull case scenario.",
-            'est_impact': bull_upside,
-            'confidence': f"Low ({int(ctx.get('bull_prob', 0.20)*100)}% probability)",
-            'effort': "High",
-            'basis': "DERIVED: Bull forecast − Base forecast",
+            'type':        "Bull Case Revenue Upside",
+            'description': "Favorable market conditions or successful strategic initiatives.",
+            'est_impact':  bull_upside,
+            'confidence':  f"Low ({method})",
+            'effort':      "High",
+            'basis':       f"DERIVED: Bull forecast (${ctx.get('bull_12', 0):,.0f}) − Base forecast (${fc12:,.0f}) = ${bull_upside:,.0f}. Bull scenario = +{bull_spread:.1f}% from base ({method}).",
         })
-
+ 
+    # فرصة 4: Price lever — فقط إذا كان الارتباط موجوداً وقوياً في البيانات الفعلية
+    top_corr_col = ctx.get('top_pos_corr_col')
+    top_corr_r   = ctx.get('top_pos_corr_r', 0.0)
+    if top_corr_col and top_corr_r > 0.5:
+        # لا نفترض 5% — نحسب من الارتباط الفعلي
+        # r=0.7 → تغيير 1 std في المتغير يرتبط بتغيير r×std_sales في المبيعات
+        # لكن هذا inferred لأن الارتباط ≠ سببية
+        total_rev = ctx.get('total_revenue', 0)
+        est_lever = total_rev * (top_corr_r * 0.05)  # 5% من r كحد أقصى محافظ
+        opps.append({
+            'type':        f"Pricing Lever — {top_corr_col}",
+            'description': f"Statistical association between {top_corr_col} and revenue (r={top_corr_r:.3f}) suggests potential pricing optimization opportunity.",
+            'est_impact':  est_lever,
+            'confidence':  "Low",
+            'effort':      "Medium",
+            'basis':       f"INFERRED: r={top_corr_r:.3f} × 5% revenue lever = ${est_lever:,.0f}. WARNING: Correlation ≠ causation. Elasticity unknown. Pilot required before scaling. Do NOT implement price changes based on correlation alone.",
+        })
+ 
     opps.sort(key=lambda x: x['est_impact'], reverse=True)
     return opps
+ 
 
 
 def _get_peak_urgency(peak_str: str) -> dict:
@@ -452,76 +487,135 @@ def _get_peak_urgency(peak_str: str) -> dict:
 def extract_dynamic_context(
     df, date_col, sales_col, summary, store_df,
     group_col, corr_series, forecast_summary, monthly_df,
-) -> dict:
+    prophet_data=None,   # PDF-FIX-5: مُضاف
+):
+    import pandas as pd
+    import numpy as np
+ 
     ctx = {}
+ 
+    # ── إحصائيات المبيعات على مستوى الصفوف الفردية (للعرض فقط) ──
     ctx['total_revenue']     = float(df[sales_col].sum())
-    ctx['avg_per_period']    = float(df[sales_col].mean())
-    ctx['median_per_period'] = float(df[sales_col].median())
     ctx['peak_value']        = float(df[sales_col].max())
     ctx['min_value']         = float(df[sales_col].min())
     ctx['n_records']         = int(len(df))
-    ctx['std_dev']           = float(df[sales_col].std())
     ctx['q1_value']          = float(df[sales_col].quantile(0.25))
     ctx['q3_value']          = float(df[sales_col].quantile(0.75))
-    ctx['cv_pct']            = round(ctx['std_dev'] / ctx['avg_per_period'] * 100, 1) if ctx['avg_per_period'] > 0 else 0
-
+ 
+    # PDF-FIX-1: aggregate أولاً ثم احسب المتوسط والـ CV
+    # المتوسط والـ median يجب أن يكونا على مستوى الفترات المجمّعة
+    period_agg = df.groupby(date_col)[sales_col].sum().reset_index()
+    if len(period_agg) > 0:
+        ctx['avg_per_period']    = float(period_agg[sales_col].mean())
+        ctx['median_per_period'] = float(period_agg[sales_col].median())
+        ctx['std_dev']           = float(period_agg[sales_col].std()) if len(period_agg) > 1 else 0.0
+        # CV على period totals — لا على صفوف المعاملات الفردية
+        ctx['cv_pct'] = round(
+            ctx['std_dev'] / ctx['avg_per_period'] * 100, 1
+        ) if ctx['avg_per_period'] > 0 else 0.0
+    else:
+        ctx['avg_per_period']    = float(df[sales_col].mean())
+        ctx['median_per_period'] = float(df[sales_col].median())
+        ctx['std_dev']           = float(df[sales_col].std()) if len(df) > 1 else 0.0
+        ctx['cv_pct']            = 0.0
+ 
     ctx['date_min']   = str(df[date_col].min().date())
     ctx['date_max']   = str(df[date_col].max().date())
     ctx['date_range'] = f"{ctx['date_min']} to {ctx['date_max']}"
-    ctx['n_periods']  = int(df[date_col].nunique())
-
-    sorted_df   = df.groupby(date_col)[sales_col].sum().reset_index().sort_values(date_col)
-    half        = max(1, len(sorted_df) // 2)
-    first_half  = float(sorted_df[sales_col].iloc[:half].mean())
-    second_half = float(sorted_df[sales_col].iloc[half:].mean())
+    ctx['n_periods']  = int(len(period_agg))
+ 
+    # Trend: first half vs second half of aggregated periods
+    sorted_agg  = period_agg.sort_values(date_col)
+    half        = max(1, len(sorted_agg) // 2)
+    first_half  = float(sorted_agg[sales_col].iloc[:half].mean()) if half > 0 else 0
+    second_half = float(sorted_agg[sales_col].iloc[half:].mean()) if len(sorted_agg) > half else first_half
     trend_pct   = (second_half - first_half) / first_half * 100 if first_half > 0 else 0
     ctx['trend_pct']       = round(trend_pct, 1)
     ctx['trend_direction'] = "growing" if trend_pct > 3 else "declining" if trend_pct < -3 else "stable"
-
-    if len(monthly_df) > 0:
+ 
+    # Growth momentum (acceleration/deceleration)
+    if len(sorted_agg) >= 4:
+        try:
+            pct_ch = sorted_agg[sales_col].pct_change().dropna()
+            recent_g = float(pct_ch.iloc[-2:].mean() * 100) if len(pct_ch) >= 2 else 0.0
+            prior_g  = float(pct_ch.iloc[-4:-2].mean() * 100) if len(pct_ch) >= 4 else 0.0
+            ctx['growth_momentum']       = round(recent_g, 1)
+            ctx['growth_momentum_delta'] = round(recent_g - prior_g, 1)
+            ctx['momentum_direction']    = (
+                "Accelerating" if recent_g > 0 and (recent_g - prior_g) > 0
+                else "Decelerating" if recent_g > 0 and (recent_g - prior_g) < 0
+                else "Declining" if recent_g < 0
+                else "Stable"
+            )
+        except Exception:
+            ctx['growth_momentum']       = 0.0
+            ctx['growth_momentum_delta'] = 0.0
+            ctx['momentum_direction']    = "Unknown"
+    else:
+        ctx['growth_momentum']       = 0.0
+        ctx['growth_momentum_delta'] = 0.0
+        ctx['momentum_direction']    = "Insufficient data"
+ 
+    # Period stats from monthly_df
+    if monthly_df is not None and len(monthly_df) > 0:
         vals   = monthly_df['total'].tolist()
         months = [str(m) for m in monthly_df['month']]
         ctx['best_period_label']  = months[vals.index(max(vals))] if vals else 'N/A'
         ctx['worst_period_label'] = months[vals.index(min(vals))] if vals else 'N/A'
         ctx['best_period_value']  = max(vals) if vals else 0
         ctx['worst_period_value'] = min(vals) if vals else 0
-        ctx['period_spread_pct']  = round((max(vals)-min(vals)) / max(ctx['avg_per_period'], 1) * 100, 1) if vals else 0
+        ctx['period_spread_pct']  = round(
+            (max(vals) - min(vals)) / max(ctx['avg_per_period'], 1) * 100, 1
+        ) if vals else 0
     else:
         for k in ['best_period_label', 'worst_period_label']:
             ctx[k] = 'N/A'
         for k in ['best_period_value', 'worst_period_value', 'period_spread_pct']:
             ctx[k] = 0
-
+ 
+    # Group/segment stats
     ctx['group_col']   = group_col or 'N/A'
     ctx['n_groups']    = int(summary.get('num_groups', 0))
     ctx['best_group']  = str(summary.get('best_group', 'N/A'))
     ctx['worst_group'] = str(summary.get('worst_group', 'N/A'))
-
+ 
     if store_df is not None and group_col:
         total_rev = store_df['total'].sum()
         ctx['best_group_revenue']  = float(store_df['total'].max())
-        ctx['best_group_share']    = round(store_df['total'].max()/total_rev*100, 1) if total_rev > 0 else 0
+        ctx['best_group_share']    = round(store_df['total'].max() / total_rev * 100, 1) if total_rev > 0 else 0
         ctx['worst_group_revenue'] = float(store_df['total'].min())
         ctx['worst_group_avg']     = float(store_df.loc[store_df['total'].idxmin(), 'avg_weekly'])
         ctx['best_group_avg']      = float(store_df.loc[store_df['total'].idxmax(), 'avg_weekly'])
         cum = store_df['total'].sort_values(ascending=False).cumsum()
-        n80 = int((cum <= total_rev*0.80).sum()) + 1
+        n80 = int((cum <= total_rev * 0.80).sum()) + 1
         ctx['pareto_n']   = n80
         ctx['pareto_pct'] = round(n80 / max(len(store_df), 1) * 100, 1)
     else:
-        for k in ['best_group_revenue','best_group_share','worst_group_revenue',
-                  'worst_group_avg','best_group_avg','pareto_n','pareto_pct']:
+        for k in ['best_group_revenue', 'best_group_share', 'worst_group_revenue',
+                  'worst_group_avg', 'best_group_avg', 'pareto_n', 'pareto_pct']:
             ctx[k] = 0
-
+ 
+    # Correlation factors
     if corr_series is not None and len(corr_series) > 0:
         pos = corr_series[corr_series > 0.1]
         neg = corr_series[corr_series < -0.1]
         ctx['pos_factors'] = [(str(k), round(float(v), 4)) for k, v in pos.items()]
         ctx['neg_factors'] = [(str(k), round(float(v), 4)) for k, v in neg.items()]
+        # Top correlation for dynamic recommendations
+        if len(pos) > 0:
+            top_pos_col = pos.idxmax()
+            ctx['top_pos_corr_col'] = str(top_pos_col)
+            ctx['top_pos_corr_r']   = round(float(pos.max()), 4)
+        else:
+            ctx['top_pos_corr_col'] = None
+            ctx['top_pos_corr_r']   = 0.0
     else:
-        ctx['pos_factors'] = []
-        ctx['neg_factors'] = []
-
+        ctx['pos_factors']      = []
+        ctx['neg_factors']      = []
+        ctx['top_pos_corr_col'] = None
+        ctx['top_pos_corr_r']   = 0.0
+ 
+    # Forecast — single source of truth
     ctx['fc4']       = float(forecast_summary.get('next_4_weeks',  0))
     ctx['fc8']       = float(forecast_summary.get('next_8_weeks',  0))
     ctx['fc12']      = float(forecast_summary.get('next_12_weeks', 0))
@@ -529,47 +623,52 @@ def extract_dynamic_context(
     ctx['bull_12']   = float(forecast_summary.get('bull_12_weeks', ctx['fc12'] * 1.25))
     ctx['peak_week'] = str(forecast_summary.get('peak_week', 'N/A'))
     ctx['peak_fc']   = float(forecast_summary.get('peak_expected_sales', 0))
-    ctx['bear_prob'] = forecast_summary.get('bear_probability', 0.25)
-    ctx['base_prob'] = forecast_summary.get('base_probability', 0.55)
-    ctx['bull_prob'] = forecast_summary.get('bull_probability', 0.20)
+ 
+    # PDF-FIX-1: استخدام spread بدل الاحتمالات الوهمية
+    ctx['bear_spread_pct']    = float(forecast_summary.get('bear_spread_pct', -25.0))
+    ctx['bull_spread_pct']    = float(forecast_summary.get('bull_spread_pct',  25.0))
+    ctx['scenario_method']    = str(forecast_summary.get('scenario_method', 'cv_scaled_fallback'))
+    # Legacy keys: صفر لأنها لم تعد تُستخدم في العرض
+    ctx['bear_prob'] = 0.0
+    ctx['base_prob'] = 0.0
+    ctx['bull_prob'] = 0.0
+ 
     ctx['confidence_level']   = forecast_summary.get('confidence_level', 'Medium')
-
-    # FIX-P4: Single source for volatility — from forecast_summary which uses classify_volatility()
-    vol_raw = forecast_summary.get('volatility', {})
-    if not vol_raw or 'level' not in vol_raw:
-        # Re-derive from cv_pct
-        from forecaster import classify_volatility
-        vol_raw = classify_volatility(ctx['cv_pct'])
-    ctx['volatility'] = vol_raw
-    # FIX-P1: Dynamic volatility label (never hardcoded)
-    ctx['volatility_level'] = vol_raw.get('level', 'High')
-    ctx['volatility_badge'] = vol_raw.get('badge', '🔴')
-
+    ctx['model_type']         = forecast_summary.get('model_type', 'unknown')
+    ctx['volatility']         = forecast_summary.get('volatility', {})
     ctx['sanity_check']       = forecast_summary.get('sanity_check', {'passed': True, 'warnings': []})
     ctx['leading_indicators'] = forecast_summary.get('leading_indicators', [])
     ctx['decision_rule']      = forecast_summary.get('decision_rule', '')
-
-    fc12_avg = ctx['fc12'] / 12 if ctx['fc12'] > 0 and ctx['n_records'] > 0 else 0
-    fc_gap   = ((fc12_avg - ctx['avg_per_period']) / ctx['avg_per_period'] * 100
-                if ctx['avg_per_period'] > 0 else 0)
-    ctx['fc12_avg_per_period'] = round(fc12_avg, 2)
-    ctx['fc_gap_pct']          = round(fc_gap, 1)
-    ctx['fc_gap_flag']         = fc_gap > 200
-
+ 
+    # Forecast gap detection
+    n_fc_periods = max(1, int(ctx['fc12'] / max(ctx['avg_per_period'], 1)))
+    fc12_avg_per_period = ctx['fc12'] / 12 if ctx['fc12'] > 0 else 0
+    fc_gap_pct = (
+        (fc12_avg_per_period - ctx['avg_per_period']) / ctx['avg_per_period'] * 100
+        if ctx['avg_per_period'] > 0 else 0
+    )
+    ctx['fc12_avg_per_period'] = round(fc12_avg_per_period, 2)
+    ctx['fc_gap_pct']          = round(fc_gap_pct, 1)
+    ctx['fc_gap_flag']         = fc_gap_pct > 200
+ 
+    # Peak urgency
+    from src.pdf_gen import _get_peak_urgency
     ctx['peak_urgency'] = _get_peak_urgency(ctx['peak_week'])
     ctx['peak_is_past'] = ctx['peak_urgency']['is_past']
-
-    ctx['worst_group_gap_weekly']  = max(ctx['avg_per_period'] - ctx['worst_group_avg'], 0)
+ 
+    # Gap calculations (derived from data)
+    ctx['worst_group_gap_weekly']  = ctx['avg_per_period'] - ctx['worst_group_avg']
     ctx['worst_group_12p_cost']    = ctx['worst_group_gap_weekly'] * 12
     ctx['worst_group_annual_cost'] = ctx['worst_group_gap_weekly'] * 52
-    ctx['action_deadline_7']  = (pd.Timestamp.now()+pd.Timedelta(days=7)).strftime('%Y-%m-%d')
-    ctx['action_deadline_30'] = (pd.Timestamp.now()+pd.Timedelta(days=30)).strftime('%Y-%m-%d')
-    ctx['action_deadline_90'] = (pd.Timestamp.now()+pd.Timedelta(days=90)).strftime('%Y-%m-%d')
+ 
+    # Deadlines
+    ctx['action_deadline_7']  = (pd.Timestamp.now() + pd.Timedelta(days=7)).strftime('%Y-%m-%d')
+    ctx['action_deadline_30'] = (pd.Timestamp.now() + pd.Timedelta(days=30)).strftime('%Y-%m-%d')
+    ctx['action_deadline_90'] = (pd.Timestamp.now() + pd.Timedelta(days=90)).strftime('%Y-%m-%d')
     ctx['report_date']        = pd.Timestamp.now().strftime('%d %B %Y')
     ctx['report_year']        = pd.Timestamp.now().strftime('%Y')
-
+ 
     return ctx
-
 
 # ═══════════════════════════════════════════════════════════
 # 5. QUALITY GUARDRAILS
@@ -1794,123 +1893,218 @@ def _growth_opportunities(story, S, ctx, opportunities, lang):
     story.append(PageBreak())
 
 
-def _recommendations(story, S, ctx, lang):
-    _section_header(story,"11","Strategic Recommendations",S,lang)
-    story.append(Paragraph(process_text(
-        "Each recommendation is decision-ready and evidence-based. "
-        "Confidence levels reflect data quality, sample size, and statistical strength. "
-        "Financial estimates are derived from data — formulas shown for transparency.",
-        lang), S['body']))
-    story.append(Spacer(1,0.15*inch))
 
-    # FIX-P2: Peak language based on timing
-    if ctx['peak_is_past']:
-        rec3_evidence = (
-            f"Historical peak occurred at <b>{ctx['peak_week']}</b> "
-            f"({_money(ctx['peak_fc'])}). "
-            f"Post-peak performance data is now available for model recalibration."
-            f" [DATA: directly measured]"
+def _recommendations(story, S, ctx, lang):
+    # import داخلي لأن هذا ملف patches
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_LEFT
+ 
+    # دوال مستوردة من pdf_gen
+    from src.pdf_gen import (
+        _section_header, _callout, _pro_table, _fig_to_img,
+        _divider, process_text, get_font, rl, mpl, _money,
+        CONTENT_W, CH
+    )
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+ 
+    _section_header(story, "11", "Strategic Recommendations", S, lang)
+    story.append(Paragraph(process_text(
+        "Each recommendation is evidence-based and decision-ready. "
+        "Confidence levels reflect data quality, sample size, and statistical foundation. "
+        "All financial estimates show derivation formulas for transparency. "
+        "Hypotheses require validation before operational action.",
+        lang), S['body']))
+    story.append(Spacer(1, 0.15 * inch))
+ 
+    # ── Dynamic correlation basis (من البيانات الفعلية) ──
+    top_corr_col = ctx.get('top_pos_corr_col')
+    top_corr_r   = ctx.get('top_pos_corr_r', 0.0)
+    if top_corr_col and top_corr_r > 0.3:
+        corr_evidence = (
+            f"Strongest positive correlation: {top_corr_col} (r={top_corr_r:.4f}). "
+            f"Statistical significance: {'Highly significant' if top_corr_r > 0.7 else 'Significant' if top_corr_r > 0.5 else 'Moderate'}. "
+            f"[CAUTION: Correlation ≠ causation. Do not assume direct causal relationship.]"
         )
-        rec3_hypo = (
-            "Use the completed peak cycle to validate forecast accuracy. "
-            "Recalibrate the model with post-peak actuals before next cycle planning. "
-            "[DERIVED — requires domain validation of seasonality pattern.]"
-        )
-        rec3_first = "Compare peak actuals vs. forecast; document variance causes"
-        rec3_roi   = (
-            f"Model improvement: better accuracy reduces planning error by est. 15–25%. "
-            f"Cost: minimal (analyst time). ROI: High over next cycle."
+        corr_conf_basis = (
+            f"r={top_corr_r:.4f} for {top_corr_col} vs revenue. "
+            f"Strength: {'Very Strong' if top_corr_r >= 0.8 else 'Strong' if top_corr_r >= 0.6 else 'Moderate'}. "
+            f"Causal mechanism unconfirmed — validate before acting on this lever."
         )
     else:
-        rec3_evidence = (
-            f"Base case projects peak at <b>{ctx['peak_week']}</b> "
-            f"({_money(ctx['peak_fc'])}). "
-            f"[ASSUMPTION: Holt-Winters trend extrapolation — {ctx['peak_urgency'].get('message','')}]"
+        corr_evidence  = "No strong positive correlations detected in the dataset (all |r| < 0.3). Revenue drivers remain unidentified from available variables."
+        corr_conf_basis = "Weak or no correlations in dataset. Recommendations based on revenue gap analysis only."
+ 
+    # ── Dynamic peak confidence ──
+    from src.forecaster import classify_volatility
+    model_type  = ctx.get('model_type', 'unknown')
+    n_periods   = ctx.get('n_periods', 0)
+    cv_pct      = ctx.get('cv_pct', 0)
+    sanity_ok   = ctx.get('sanity_check', {}).get('passed', True)
+ 
+    if model_type in ('HW_seasonal_52',) and n_periods >= 104 and sanity_ok:
+        peak_conf = "Medium"
+        peak_conf_basis = (
+            f"Model: {model_type} on {n_periods} periods. "
+            f"Seasonal model with full annual cycle — moderate confidence. "
+            f"CV={cv_pct:.1f}% introduces uncertainty."
         )
-        rec3_hypo = (
-            "Peak may represent genuine demand surge — possible but unconfirmed. "
-            "Seasonality patterns require >52 weeks for high confidence. "
-            "[Treat as directional planning signal only.]"
+    elif not sanity_ok:
+        peak_conf = "Low"
+        peak_conf_basis = (
+            f"Sanity check FAILED — forecast anomaly detected. "
+            f"Peak timing is directional only. Do not commit resources based on this date alone."
         )
-        rec3_first = "Confirm inventory levels, staffing capacity, and promotional calendar for projected peak window"
-        rec3_roi   = (
-            f"Capture opportunity: {_money(ctx['peak_fc'])} [ASSUMPTION: if peak materializes]. "
-            f"Cost: minimal inventory pre-positioning. ROI: High if peak confirmed. "
-            f"Risk: Peak may not occur — see Bear case (${ctx['bear_12']:,.0f}/12p)."
+    else:
+        peak_conf = "Low"
+        peak_conf_basis = (
+            f"Model: {model_type} on {n_periods} periods. "
+            f"Insufficient history for seasonal modeling (<104 periods). "
+            f"Peak is a trend extrapolation — treat as planning signal only."
         )
-
+ 
+    from reportlab.lib.units import inch
+ 
     recs = [
         {
-            'title':      "Priority 1 — Investigate & Replicate Top Performer Model",
-            'evidence':   f"Quantity Group <b>{ctx['best_group']}</b> generates "
-                          f"${ctx['best_group_revenue']:,.0f} ({ctx['best_group_share']:.1f}% of total). "
-                          f"[DATA: directly measured from dataset]",
-            'hypothesis': f"Hypothesis: operational drivers of Group {ctx['best_group']} "
-                          f"may be transferable to underperforming groups. "
-                          f"[INFERRED — requires investigation before scaling.]",
-            'owner':      "Sales Manager / Head of Operations",
-            'deadline':   ctx['action_deadline_30'],
-            'first':      f"Map top 3 operational characteristics of Group {ctx['best_group']}",
-            'metric':     f"Underperforming groups reach 70% of Group {ctx['best_group']}'s avg "
-                          f"(${ctx['best_group_avg']*0.7:,.0f}/period) by {ctx['action_deadline_90']}",
-            'roi':        f"Est. impact: ${ctx['worst_group_12p_cost']:,.0f} "
-                          f"[DERIVED: gap × 12 periods]. Est. cost: $500–$1,500. "
-                          f"Payback: <1 period if 30% gap closure achieved.",
-            'inaction':   f"${ctx['worst_group_12p_cost']:,.0f} foregone over 12 periods [DERIVED]",
-            'conf':       "Medium",
-            'conf_basis': "Statistically derived from revenue gap. Limited by unknown operational factors.",
-            'style':      'blue',
+            'title':     f"Priority 1 — Investigate & Replicate Group {ctx['best_group']} Model",
+            'evidence':  (
+                f"Group <b>{ctx['best_group']}</b> generates "
+                f"<b>${ctx['best_group_revenue']:,.0f}</b> ({ctx['best_group_share']:.1f}% of total portfolio revenue). "
+                f"Gap vs worst performer: ${ctx['worst_group_gap_weekly']:,.0f}/period. "
+                f"[DATA: directly measured]"
+            ),
+            'hypothesis': (
+                f"Hypothesis: operational characteristics of Group {ctx['best_group']} may be transferable. "
+                f"Correlation data: {corr_evidence} "
+                f"[INFERRED — do not assume product mix, channel, or geographic differences "
+                f"without domain expert validation.]"
+            ),
+            'owner':     "Sales Manager / Head of Operations",
+            'deadline':  ctx['action_deadline_30'],
+            'first':     (
+                f"Document top 3 operational characteristics of Group {ctx['best_group']}: "
+                f"transaction frequency, revenue per transaction, and promotional cadence."
+            ),
+            'metric':    (
+                f"Bottom groups reach 70% of Group {ctx['best_group']}'s average "
+                f"(${ctx['best_group_avg'] * 0.7:,.0f}/period) by {ctx['action_deadline_90']}"
+            ),
+            'roi':       (
+                f"Est. impact (50% gap closure): ${ctx['worst_group_12p_cost'] * 0.5:,.0f} over 12 periods "
+                f"[DERIVED: gap (${ctx['worst_group_gap_weekly']:,.0f}) × 12 periods × 50% closure]. "
+                f"Full closure maximum: ${ctx['worst_group_12p_cost']:,.0f}. "
+                f"Payback: <1 period if 30% closure achieved."
+            ),
+            'inaction':  (
+                f"${ctx['worst_group_12p_cost']:,.0f} foregone over 12 periods "
+                f"[DERIVED: gap × 12]. Annual run-rate: ${ctx['worst_group_annual_cost']:,.0f}."
+            ),
+            'conf':      "Medium",
+            'conf_basis': corr_conf_basis,
+            'style':     'blue',
         },
         {
-            'title':      f"Priority 2 — Diagnose Group {ctx['worst_group']} Underperformance",
-            'evidence':   f"Group {ctx['worst_group']} underperforms by "
-                          f"<b>${ctx['worst_group_gap_weekly']:,.0f}/period</b> vs. portfolio average. "
-                          f"[DATA: directly measured]",
-            'hypothesis': "Possible hypotheses (each requiring validation): "
-                          "(A) Pricing misalignment; (B) Lower transaction frequency; "
-                          "(C) Product-market fit issue. Root cause requires investigation.",
-            'owner':      "Category Manager / Regional Director",
-            'deadline':   ctx['action_deadline_7'],
-            'first':      f"Audit Group {ctx['worst_group']}: price distribution, transaction frequency",
-            'metric':     f"Close performance gap by 50% within 30 days of intervention",
-            'roi':        f"Est. impact: ${ctx['worst_group_12p_cost']:,.0f}/12 periods [DERIVED]. "
-                          "ROI: High if pricing lever confirmed. Payback: 1–3 periods.",
-            'inaction':   f"${ctx['worst_group_annual_cost']:,.0f}/year gap vs. portfolio [DERIVED]",
-            'conf':       "Low",
-            'conf_basis': "Low: unknown root cause, no price elasticity data available.",
-            'style':      'amber',
+            'title':     f"Priority 2 — Root Cause Diagnosis: Group {ctx['worst_group']}",
+            'evidence':  (
+                f"Group <b>{ctx['worst_group']}</b> underperforms by "
+                f"<b>${ctx['worst_group_gap_weekly']:,.0f}/period</b> vs. portfolio average "
+                f"(${ctx['avg_per_period']:,.0f}/period). [DATA: directly measured]"
+            ),
+            'hypothesis': (
+                f"Possible root causes (each requiring validation): "
+                f"(A) Revenue mix differences — investigate product/service composition; "
+                f"(B) Transaction frequency gap — compare average transactions per period; "
+                f"(C) Pricing structure variance — compare average revenue per transaction; "
+                f"(D) Operational efficiency — compare cost structure if available. "
+                f"Correlation analysis: {corr_evidence} "
+                f"[Do NOT implement changes without confirming root cause.]"
+            ),
+            'owner':     "Category Manager / Regional Director",
+            'deadline':  ctx['action_deadline_7'],
+            'first':     (
+                f"Audit Group {ctx['worst_group']}: pull transaction-level data, "
+                f"compare average transaction value and frequency vs. Group {ctx['best_group']}."
+            ),
+            'metric':    (
+                f"Close 50% of performance gap "
+                f"(to ${ctx['avg_per_period'] - ctx['worst_group_gap_weekly'] * 0.5:,.0f}/period) "
+                f"within 30 days of confirmed root cause intervention."
+            ),
+            'roi':       (
+                f"50% gap closure: ${ctx['worst_group_12p_cost'] * 0.5:,.0f}/12 periods "
+                f"[DERIVED: gap × 12 × 50%]. "
+                f"Audit cost: $200–$500. ROI: dependent on root cause — quantify after diagnosis."
+            ),
+            'inaction':  (
+                f"${ctx['worst_group_annual_cost']:,.0f}/year ongoing underperformance "
+                f"[DERIVED: gap × 52 periods]"
+            ),
+            'conf':      "Low",
+            'conf_basis': (
+                f"Low: root cause unknown. Gap is [DATA] — cause is [INFERRED]. "
+                f"Confidence upgrades to Medium after root cause confirmed."
+            ),
+            'style':     'amber',
         },
         {
-            'title':      "Priority 3 — Align with Forecast Peak Cycle",
-            'evidence':   rec3_evidence,
-            'hypothesis': rec3_hypo,
-            'owner':      "Supply Chain / Marketing Manager",
-            'deadline':   ctx['action_deadline_7'],
-            'first':      rec3_first,
-            'metric':     f"Capture >= 85% of projected peak revenue ({_money(ctx['peak_fc']*0.85)})",
-            'roi':        rec3_roi,
-            'inaction':   f"Up to {_money(ctx['peak_fc']*0.15)} uncaptured if peak materializes",
-            'conf':       "Medium",
-            'conf_basis': "Trend momentum supports peak projection. Limited by incomplete seasonal cycle.",
-            'style':      'green',
+            'title':     "Priority 3 — Prepare for Projected Demand Peak",
+            'evidence':  (
+                f"Base-case forecast projects peak at <b>{ctx['peak_week']}</b> "
+                f"→ <b>{_money(ctx['peak_fc'])}</b>. "
+                f"[Model: {model_type} | Confidence: {ctx['confidence_level']}]"
+                + (" ⚠️ SANITY CHECK FAILED — treat as directional only." if not sanity_ok else "")
+            ),
+            'hypothesis': (
+                f"Peak may represent seasonal demand surge or trend momentum. "
+                f"{'Full seasonal cycle not available (<104 periods) — peak timing is extrapolated, not confirmed.' if n_periods < 104 else 'Seasonal model trained on full cycle — moderate confidence in peak timing.'} "
+                f"Bear case: ${ctx['bear_12']:,.0f}/12 periods ({ctx['bear_spread_pct']:+.1f}% from base). "
+                f"[Treat as planning signal — monitor leading indicators before committing inventory.]"
+            ),
+            'owner':     "Supply Chain / Operations Manager",
+            'deadline':  ctx['action_deadline_7'],
+            'first':     (
+                "Review inventory capacity, staffing levels, and promotional calendar "
+                f"for the {ctx['peak_week']} window."
+            ),
+            'metric':    (
+                f"Capture ≥85% of projected peak revenue "
+                f"({_money(ctx['peak_fc'] * 0.85)}) "
+                f"[DERIVED: peak × 85% capture rate]"
+            ),
+            'roi':       (
+                f"Peak capture opportunity: {_money(ctx['peak_fc'])} "
+                f"[ASSUMPTION: peak materializes as projected]. "
+                f"Bear case floor: ${ctx['bear_12']:,.0f}/12 periods. "
+                f"Cost: inventory pre-positioning (domain-specific). "
+                f"Risk: {_money(ctx['peak_fc'])} lost if peak missed."
+            ),
+            'inaction':  (
+                f"Up to {_money(ctx['peak_fc'] * 0.15)} uncaptured revenue "
+                f"if peak not prepared for [DERIVED: peak × 15% stockout rate assumption]"
+            ),
+            'conf':      peak_conf,
+            'conf_basis': peak_conf_basis,
+            'style':     'green',
         },
     ]
-
+ 
     labels = {
-        'HYP':      "HYPOTHESES",
+        'HYP':      "HYPOTHESES (TO VALIDATE)",
         'OWNER':    "DECISION OWNER",
         'DEADLINE': "DEADLINE",
         'FIRST':    "FIRST ACTION (48h)",
         'METRIC':   "SUCCESS METRIC",
-        'ROI':      "BUSINESS IMPACT",
+        'ROI':      "BUSINESS IMPACT CALCULATOR",
         'INACTION': "COST OF INACTION",
-        'CONF':     "CONFIDENCE",
+        'CONF':     "RECOMMENDATION CONFIDENCE",
     }
-
+ 
     for rec in recs:
-        story.append(Paragraph(process_text(rec['title'],lang), S['h3']))
-        _callout(story, process_text(rec['evidence'],lang), rec['style'], S, lang)
-
+        story.append(Paragraph(process_text(rec['title'], lang), S['h3']))
+        _callout(story, process_text(rec['evidence'], lang), rec['style'], S, lang)
+ 
         meta_rows = [
             [labels['HYP'],      rec['hypothesis']],
             [labels['OWNER'],    rec['owner']],
@@ -1922,57 +2116,82 @@ def _recommendations(story, S, ctx, lang):
             [labels['CONF'],     f"● {rec['conf']}  |  {rec['conf_basis']}"],
         ]
         meta_data = [[
-            Paragraph(process_text(k,lang),
-                      ParagraphStyle('mk',fontSize=7,fontName=get_font(lang,True),
-                                     textColor=rl('gray'),leading=11,alignment=TA_LEFT)),
-            Paragraph(process_text(v,lang),
-                      ParagraphStyle('mv',fontSize=8,fontName=get_font(lang),
-                                     textColor=rl('gray_dark'),leading=13,alignment=TA_LEFT,wordWrap='LTR')),
-        ] for k,v in meta_rows]
-
-        desc_col_w = CONTENT_W - 1.5*inch - 0.1*inch
-        meta_tbl = Table(meta_data, colWidths=[1.5*inch, desc_col_w])
+            Paragraph(process_text(k, lang),
+                      ParagraphStyle('mk', fontSize=7, fontName=get_font(lang, True),
+                                     textColor=rl('gray'), leading=11, alignment=TA_LEFT)),
+            Paragraph(process_text(v, lang),
+                      ParagraphStyle('mv', fontSize=8, fontName=get_font(lang),
+                                     textColor=rl('gray_dark'), leading=13, alignment=TA_LEFT)),
+        ] for k, v in meta_rows]
+ 
+        desc_col_w = CONTENT_W - 1.5 * inch - 0.1 * inch
+        meta_tbl   = Table(meta_data, colWidths=[1.5 * inch, desc_col_w])
         style_list = [
-            ('BACKGROUND',(0,0),(0,-1),rl('gray_light')),
-            ('BACKGROUND',(1,0),(1,-1),rl('white')),
-            ('TOPPADDING',(0,0),(-1,-1),5),('BOTTOMPADDING',(0,0),(-1,-1),5),
-            ('LEFTPADDING',(0,0),(-1,-1),7),('RIGHTPADDING',(0,0),(-1,-1),7),
-            ('GRID',(0,0),(-1,-1),0.2,rl('border')),('VALIGN',(0,0),(-1,-1),'TOP'),
-            ('BACKGROUND',(0,5),(1,5),rl('green_light')),
-            ('BACKGROUND',(0,6),(1,6),rl('amber_light')),
+            ('BACKGROUND', (0, 0), (0, -1), rl('gray_light')),
+            ('BACKGROUND', (1, 0), (1, -1), rl('white')),
+            ('TOPPADDING',    (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ('LEFTPADDING',   (0, 0), (-1, -1), 7),
+            ('RIGHTPADDING',  (0, 0), (-1, -1), 7),
+            ('GRID', (0, 0), (-1, -1), 0.2, rl('border')),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('BACKGROUND', (0, 5), (1, 5), rl('green_light')),   # ROI row
+            ('BACKGROUND', (0, 6), (1, 6), rl('amber_light')),   # Inaction row
         ]
-        conf_bg = (rl('green_light') if rec['conf']=='High' else rl('amber_light') if rec['conf']=='Medium' else rl('red_light'))
-        style_list.append(('BACKGROUND',(0,7),(1,7),conf_bg))
-        style_list.append(('FONTNAME',(0,7),(1,7),get_font(lang,bold=True)))
+        conf_bg = (
+            rl('green_light') if rec['conf'] == 'High'
+            else rl('amber_light') if rec['conf'] == 'Medium'
+            else rl('red_light')
+        )
+        style_list.append(('BACKGROUND', (0, 7), (1, 7), conf_bg))
+        style_list.append(('FONTNAME',   (0, 7), (1, 7), get_font(lang, bold=True)))
         meta_tbl.setStyle(TableStyle(style_list))
-        story.append(meta_tbl); story.append(Spacer(1,0.22*inch))
-
+        story.append(meta_tbl)
+        story.append(Spacer(1, 0.22 * inch))
+ 
     # Priority Matrix
-    story.append(Paragraph(process_text("Priority Matrix — Impact vs. Effort",lang), S['h2']))
+    story.append(Paragraph(process_text("Priority Matrix — Impact vs. Effort", lang), S['h2']))
     fig, ax = plt.subplots(figsize=(6.5, 4.0))
-    for (x1,y1,x2,y2,clr,lbl) in [
-        (0.5,0.5,1.5,1.5,'#F0FDF4',"Quick Wins"),(1.5,0.5,2.5,1.5,'#EFF6FF',"Strategic Projects"),
-        (0.5,1.5,1.5,2.5,'#FEF3C7',"Low Priority"),(1.5,1.5,2.5,2.5,'#FEF2F2',"Major Investments"),
+    for (x1, y1, x2, y2, clr, lbl) in [
+        (0.5, 0.5, 1.5, 1.5, '#F0FDF4', "Quick Wins"),
+        (1.5, 0.5, 2.5, 1.5, '#EFF6FF', "Strategic Projects"),
+        (0.5, 1.5, 1.5, 2.5, '#FEF3C7', "Low Priority"),
+        (1.5, 1.5, 2.5, 2.5, '#FEF2F2', "Major Investments"),
     ]:
-        ax.add_patch(mpatches.FancyBboxPatch((x1,y1),x2-x1,y2-y1,
-            boxstyle="round,pad=0.02",fc=clr,ec=CH['border'],lw=0.5,zorder=1))
-        ax.text((x1+x2)/2,(y1+y2)/2,lbl,ha='center',va='center',fontsize=8,color=CH['gray_mid'],style='italic')
-    pm_items = [("Replicate\nTop Model",0.8,0.8,mpl('chart1')),("Diagnose\nUnderperf.",0.9,1.0,mpl('chart5')),
-                ("Peak\nPreparation",0.7,0.7,mpl('chart3')),("Segment\nTiering",1.6,1.4,mpl('chart2')),
-                ("Portfolio\nOptimize",2.0,1.9,mpl('chart_neg'))]
+        ax.add_patch(mpatches.FancyBboxPatch(
+            (x1, y1), x2 - x1, y2 - y1,
+            boxstyle="round,pad=0.02", fc=clr, ec=CH['border'], lw=0.5, zorder=1))
+        ax.text((x1 + x2) / 2, (y1 + y2) / 2, lbl,
+                ha='center', va='center', fontsize=8, color=CH['gray_mid'], style='italic')
+ 
+    pm_items = [
+        (f"Root Cause\nGroup {ctx['best_group']}", 0.8, 0.8, mpl('chart1')),
+        (f"Diagnose\nGroup {ctx['worst_group']}",  0.9, 1.0, mpl('chart5')),
+        ("Peak\nPreparation",                       0.7, 0.7, mpl('chart3')),
+        ("Segment\nTiering",                        1.6, 1.4, mpl('chart2')),
+        ("Portfolio\nOptimization",                 2.0, 1.9, mpl('chart_neg')),
+    ]
     for lbl, x, y, clr in pm_items:
         ax.scatter(x, y, s=160, color=clr, zorder=5, alpha=0.85)
-        ax.annotate(lbl,(x,y),textcoords="offset points",xytext=(5,5),fontsize=6.5,color=CH['gray_dark'])
-    ax.set_xlim(0.5,2.5); ax.set_ylim(0.5,2.5)
-    ax.set_xticks([1.0,2.0]); ax.set_xticklabels(['Low Effort','High Effort'],fontsize=8)
-    ax.set_yticks([1.0,2.0]); ax.set_yticklabels(['Low Impact','High Impact'],fontsize=8)
-    ax.set_xlabel("Effort Required",fontsize=9,fontweight='bold')
-    ax.set_ylabel("Business Impact",fontsize=9,fontweight='bold')
-    ax.set_title("Priority Matrix — Impact vs. Effort",fontsize=10,fontweight='bold',color=mpl('chart1'))
-    ax.grid(False); ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
+        ax.annotate(lbl, (x, y), textcoords="offset points",
+                    xytext=(5, 5), fontsize=6.5, color=CH['gray_dark'])
+ 
+    ax.set_xlim(0.5, 2.5); ax.set_ylim(0.5, 2.5)
+    ax.set_xticks([1.0, 2.0]); ax.set_xticklabels(['Low Effort', 'High Effort'], fontsize=8)
+    ax.set_yticks([1.0, 2.0]); ax.set_yticklabels(['Low Impact', 'High Impact'], fontsize=8)
+    ax.set_xlabel("Effort Required", fontsize=9, fontweight='bold')
+    ax.set_ylabel("Business Impact",  fontsize=9, fontweight='bold')
+    ax.set_title("Priority Matrix — Impact vs. Effort",
+                 fontsize=10, fontweight='bold', color=mpl('chart1'))
+    ax.grid(False)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
     plt.tight_layout(pad=1.0)
-    story.append(_fig_to_img(fig, width=CONTENT_W*0.65, height=3.3*inch))
+    story.append(_fig_to_img(fig, width=CONTENT_W * 0.65, height=3.3 * inch))
+ 
+    from reportlab.platypus import PageBreak
     story.append(PageBreak())
+ 
 
 
 def _appendix(story, S, ctx, lang, validation_report=None):
@@ -2115,9 +2334,10 @@ def generate_pdf(
     """
     # Step 1: Compute all numbers once
     ctx = extract_dynamic_context(
-        df, date_col, sales_col, summary, store_df,
-        group_col, corr_series, forecast_summary, monthly_df,
-    )
+    df, date_col, sales_col, summary, store_df,
+    group_col, corr_series, forecast_summary, monthly_df,
+    prophet_data=prophet_data,
+)
 
     # Step 2: Compute all statistics
     stat_results  = compute_statistical_validation(df, sales_col, corr_series)
@@ -2176,8 +2396,11 @@ def generate_pdf(
     _risk_matrix(story, S, ctx, risks, lang)
     _growth_opportunities(story, S, ctx, opportunities, lang)
     _recommendations(story, S, ctx, lang)
+    ctx['_computed_opportunities'] = opportunities
     _appendix(story, S, ctx, lang, validation_report)
 
     doc.build(story, onFirstPage=footer_fn, onLaterPages=footer_fn)
     buffer.seek(0)
     return buffer.read()
+
+
