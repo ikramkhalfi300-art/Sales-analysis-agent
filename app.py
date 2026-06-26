@@ -1,937 +1,827 @@
+"""
+app.py — واجهة Streamlit للـ Sales Analysis Multi-Agent System
+==============================================================
+هذا الملف مسؤول فقط عن:
+  - عرض الـ UI
+  - استقبال مدخلات المستخدم
+  - استدعاء OrchestratorAgent
+  - عرض النتائج
+
+لا يحتوي على أي منطق تحليل أو حسابات.
+"""
+
 import streamlit as st
 import pandas as pd
 import os
-from dotenv import load_dotenv
-from src.translations import get_translations
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 
-load_dotenv()
+# ── إعداد الصفحة — يجب أن يكون أول شيء ─────────────────
+st.set_page_config(
+    page_title="Sales Analysis Agent",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-st.set_page_config(page_title="Sales Analysis Agent", page_icon="📊", layout="wide")
-
-# ─── اختيار اللغة ────────────────────────────────────────
-lang_options = {"English": "en", "العربية": "ar", "Français": "fr"}
-lang_label   = st.sidebar.selectbox("🌐 Language / اللغة / Langue", list(lang_options.keys()))
-lang         = lang_options[lang_label]
-T            = get_translations(lang)
-
-direction = "rtl" if lang == "ar" else "ltr"
-st.markdown(f"""
+# ── CSS مخصص ─────────────────────────────────────────────
+st.markdown("""
 <style>
-    .main-header {{
-        font-size: 2.2rem; font-weight: 700; color: #1E40AF;
-        text-align: center; padding: 1rem 0; direction: {direction};
-    }}
-    .sub-header {{
-        font-size: 1rem; color: #6B7280;
-        text-align: center; margin-bottom: 2rem; direction: {direction};
-    }}
-    .company-badge {{
-        display: inline-block; background: #EFF6FF; color: #1E40AF;
-        border: 1px solid #BFDBFE; border-radius: 8px;
-        padding: 4px 14px; font-size: 0.9rem; font-weight: 600;
-        margin-bottom: 0.5rem;
-    }}
-    .scenario-bear {{
-        background: #FEF2F2; border-left: 4px solid #DC2626;
-        padding: 10px 14px; border-radius: 6px; margin-bottom: 6px;
-    }}
-    .scenario-base {{
-        background: #EFF6FF; border-left: 4px solid #2563EB;
-        padding: 10px 14px; border-radius: 6px; margin-bottom: 6px;
-    }}
-    .scenario-bull {{
-        background: #F0FDF4; border-left: 4px solid #16A34A;
-        padding: 10px 14px; border-radius: 6px; margin-bottom: 6px;
-    }}
-    .stApp {{ direction: {direction}; }}
+    /* خلفية وألوان رئيسية */
+    .stApp { background-color: #0F1117; }
+
+    /* بطاقات KPI */
+    .kpi-card {
+        background: linear-gradient(135deg, #1E2130 0%, #252A3D 100%);
+        border: 1px solid #2D3250;
+        border-radius: 12px;
+        padding: 20px;
+        text-align: center;
+        transition: transform 0.2s;
+    }
+    .kpi-card:hover { transform: translateY(-2px); }
+    .kpi-value {
+        font-size: 28px;
+        font-weight: 700;
+        color: #7C9EFF;
+        margin: 0;
+    }
+    .kpi-label {
+        font-size: 12px;
+        color: #8B92A5;
+        margin-top: 4px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    /* شارة الحالة */
+    .status-success {
+        background: #0D2B1F;
+        border: 1px solid #1A6B3A;
+        border-radius: 8px;
+        padding: 10px 16px;
+        color: #4ADE80;
+        font-size: 13px;
+    }
+    .status-warning {
+        background: #2B1F0D;
+        border: 1px solid #6B3A1A;
+        border-radius: 8px;
+        padding: 10px 16px;
+        color: #FCD34D;
+        font-size: 13px;
+    }
+    .status-error {
+        background: #2B0D0D;
+        border: 1px solid #6B1A1A;
+        border-radius: 8px;
+        padding: 10px 16px;
+        color: #F87171;
+        font-size: 13px;
+    }
+
+    /* بطاقة Agent */
+    .agent-card {
+        background: #1A1F2E;
+        border-left: 3px solid #7C9EFF;
+        border-radius: 0 8px 8px 0;
+        padding: 12px 16px;
+        margin: 6px 0;
+        font-size: 13px;
+    }
+
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background: #141824;
+        border-right: 1px solid #1E2130;
+    }
+
+    /* Divider */
+    hr { border-color: #1E2130; }
+
+    /* Tab styling */
+    .stTabs [data-baseweb="tab"] {
+        font-size: 14px;
+        font-weight: 500;
+    }
+
+    /* Chat messages */
+    .chat-user {
+        background: #1E2130;
+        border-radius: 12px 12px 4px 12px;
+        padding: 12px 16px;
+        margin: 8px 0;
+        margin-left: 20%;
+        color: #E2E8F0;
+    }
+    .chat-assistant {
+        background: #141E35;
+        border: 1px solid #2D3250;
+        border-radius: 12px 12px 12px 4px;
+        padding: 12px 16px;
+        margin: 8px 0;
+        margin-right: 10%;
+        color: #E2E8F0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# ─── Sidebar ─────────────────────────────────────────────
-with st.sidebar:
-    st.header(T["settings"])
 
-    company_name = st.text_input(
-        T["company_name"],
-        placeholder=T["company_placeholder"],
-        value=st.session_state.get("company_name", "")
-    )
-    st.session_state.company_name = company_name
-
-    period_options = {
-        "Weekly":    ("W",  12, "week"),
-        "Monthly":   ("M",  6,  "month"),
-        "Quarterly": ("Q",  4,  "quarter"),
-        "Yearly":    ("A",  3,  "year"),
+# ════════════════════════════════════════════════
+# SESSION STATE INITIALIZATION
+# ════════════════════════════════════════════════
+def init_session():
+    defaults = {
+        "ctx":          None,       # SharedContext من آخر pipeline
+        "chat_history": [],         # تاريخ المحادثة
+        "lang":         "en",
+        "analyzed":     False,
+        "last_file":    None,
     }
-    period_labels = {
-        "en": {"Weekly":"Weekly","Monthly":"Monthly","Quarterly":"Quarterly","Yearly":"Yearly"},
-        "ar": {"Weekly":"أسبوعي","Monthly":"شهري","Quarterly":"ربع سنوي","Yearly":"سنوي"},
-        "fr": {"Weekly":"Hebdomadaire","Monthly":"Mensuel","Quarterly":"Trimestriel","Yearly":"Annuel"},
-    }
-    pl = period_labels.get(lang, period_labels["en"])
-    period_display = list(pl.values())
-    period_keys    = list(pl.keys())
-    sel_period_idx = st.selectbox(
-        "📅 " + ("Analysis Period" if lang=="en" else "فترة التحليل" if lang=="ar" else "Période d'analyse"),
-        options=range(len(period_display)),
-        format_func=lambda i: period_display[i]
-    )
-    selected_period_key = period_keys[sel_period_idx]
-    period_freq, forecast_periods, period_unit = period_options[selected_period_key]
-    st.session_state.period_freq      = period_freq
-    st.session_state.forecast_periods = forecast_periods
-    st.session_state.period_unit      = period_unit
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-    st.subheader(T["upload_data"])
-    uploaded_file = st.file_uploader(T["upload_hint"], type=['csv','xlsx','xls'])
+init_session()
 
-    date_col  = None
-    sales_col = None
 
-    if uploaded_file:
-        try:
-            if uploaded_file.name.endswith('.csv'):
-                try:    preview_df = pd.read_csv(uploaded_file)
-                except: uploaded_file.seek(0); preview_df = pd.read_csv(uploaded_file, encoding='latin1')
-            else:
-                preview_df = pd.read_excel(uploaded_file)
-            uploaded_file.seek(0)
-            preview_df.columns = preview_df.columns.str.strip()
-            cols = preview_df.columns.tolist()
+# ════════════════════════════════════════════════
+# TRANSLATIONS (مستخرجة من translations.py)
+# ════════════════════════════════════════════════
+from translations import get_translations
 
-            st.subheader(T["map_columns"])
-            st.caption(T["date_warning"])
+def T(key: str) -> str:
+    return get_translations(st.session_state.lang).get(key, key)
 
-            date_options  = [c for c in cols if any(x in c.lower() for x in ['date','time','week','month','year','day','تاريخ'])] or cols
-            date_col      = st.selectbox(T["date_col"], options=cols, index=cols.index(date_options[0]) if date_options else 0)
-            sales_options = [c for c in cols if any(x in c.lower() for x in ['sale','revenue','amount','total','مبيع','إيراد','vente'])] or cols
-            sales_col     = st.selectbox(T["sales_col"], options=cols, index=cols.index(sales_options[0]) if sales_options else 0)
-            analyze_btn   = st.button(T["analyze_btn"], type="primary", use_container_width=True)
-        except Exception as e:
-            st.error(f"Error reading file: {e}")
-            analyze_btn = False
-    else:
-        analyze_btn = False
-        st.info(T["upload_prompt"])
 
-    st.divider()
+# ════════════════════════════════════════════════
+# SIDEBAR
+# ════════════════════════════════════════════════
+def render_sidebar():
+    with st.sidebar:
+        # ── اللغة ────────────────────────────────
+        st.markdown("### 🌐 Language / اللغة / Langue")
+        lang = st.selectbox(
+            "",
+            options=["en", "ar", "fr"],
+            format_func=lambda x: {"en": "🇬🇧 English", "ar": "🇸🇦 العربية", "fr": "🇫🇷 Français"}[x],
+            index=["en", "ar", "fr"].index(st.session_state.lang),
+            label_visibility="collapsed",
+        )
+        if lang != st.session_state.lang:
+            st.session_state.lang = lang
+            st.rerun()
 
-    pap_labels = {
-        "en": "Include Priority Action Plan",
-        "ar": "تضمين خطة الأولويات",
-        "fr": "Inclure le Plan d'Action Prioritaire",
-    }
-    include_pap = st.checkbox(
-        f"⭐ {pap_labels.get(lang, pap_labels['en'])}",
-        value=False,
-        key="include_pap"
-    )
-    if include_pap:
-        pap_badge = {
-            "en": "Premium feature enabled — Priority Action Plan will be included in the PDF.",
-            "ar": "الميزة المتميزة مفعّلة — ستُضمَّن خطة الأولويات في تقرير PDF.",
-            "fr": "Fonctionnalité premium activée — le Plan d'Action sera inclus dans le PDF.",
-        }
-        st.success(pap_badge.get(lang, pap_badge["en"]))
+        st.divider()
 
-    st.divider()
-    st.caption(T["built_with"])
+        # ── رفع الملف ────────────────────────────
+        st.markdown(f"### {T('upload_data')}")
+        uploaded = st.file_uploader(
+            T("upload_hint"),
+            type=["csv", "xlsx", "xls"],
+            label_visibility="collapsed",
+        )
 
-# ─── Header ──────────────────────────────────────────────
-cname = st.session_state.get("company_name","").strip()
-title_text = f"📊 {cname}" if cname else T["app_title"]
-st.markdown(f'<p class="main-header">{title_text}</p>', unsafe_allow_html=True)
-st.markdown(f'<p class="sub-header">{T["app_subtitle"]}</p>', unsafe_allow_html=True)
+        # ── اسم الشركة ───────────────────────────
+        company_name = st.text_input(
+            T("company_name"),
+            placeholder=T("company_placeholder"),
+        )
 
-# ─── Session State ────────────────────────────────────────
-for key, default in [('analyzed',False),('chat_history',[]),('system_prompt',None),('lang',lang)]:
-    if key not in st.session_state:
-        st.session_state[key] = default
-if st.session_state.lang != lang:
-    st.session_state.chat_history = []
-    st.session_state.lang = lang
+        st.divider()
 
-def chart_title(base):
-    c = st.session_state.get("company_name","").strip()
-    return f"{c} — {base}" if c else base
+        # ── إعداد الأعمدة (تظهر فقط بعد رفع الملف) ──
+        date_col  = "Date"
+        sales_col = "Weekly_Sales"
 
-# ─── التحليل ─────────────────────────────────────────────
-if analyze_btn and uploaded_file and date_col and sales_col:
+        if uploaded:
+            st.markdown(f"### {T('map_columns')}")
+            st.caption(T("date_warning"))
 
-    with st.spinner("🔄 " + ("Loading..." if lang=="en" else "تحميل..." if lang=="ar" else "Chargement...")):
-        try:
-            uploaded_file.seek(0)
-            if uploaded_file.name.endswith('.csv'):
-                try:    raw_df = pd.read_csv(uploaded_file)
-                except: uploaded_file.seek(0); raw_df = pd.read_csv(uploaded_file, encoding='latin1')
-            else:
-                raw_df = pd.read_excel(uploaded_file)
-            raw_df.columns = raw_df.columns.str.strip()
-            date_col  = date_col.strip()
-            sales_col = sales_col.strip()
-            raw_df[date_col] = pd.to_datetime(raw_df[date_col], errors='coerce')
-            from src.data_cleaner import clean_data
-            df, report = clean_data(raw_df, date_col=date_col, sales_col=sales_col)
-            df = df.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
-            st.session_state.df        = df
-            st.session_state.date_col  = date_col
-            st.session_state.sales_col = sales_col
-            st.session_state.report    = report
-        except Exception as e:
-            st.error(f"❌ {e}"); st.stop()
-
-    with st.spinner("📊 " + ("Analyzing..." if lang=="en" else "جاري التحليل..." if lang=="ar" else "Analyse...")):
-        from src.data_loader import get_summary
-        from src.analyzer    import holiday_vs_normal
-        df        = st.session_state.df
-        summary   = get_summary(df, date_col, sales_col)
-        group_col = summary.get('group_col')
-        freq      = st.session_state.period_freq
-
-        store_df = None
-        if group_col:
-            store_df = (df.groupby(group_col)[sales_col].agg(['sum','mean'])
-                        .rename(columns={'sum':'total','mean':'avg_weekly'})
-                        .reset_index().sort_values('total', ascending=False))
-
-        df_period = df.copy()
-        df_period['period'] = df_period[date_col].dt.to_period(freq)
-        monthly_df = (df_period.groupby('period')[sales_col].sum().reset_index()
-                      .rename(columns={sales_col:'total','period':'month'}))
-
-        holiday_df   = holiday_vs_normal(df) if 'Holiday_Flag' in df.columns else None
-        numeric_cols = [c for c in df.select_dtypes(include='number').columns if c != sales_col]
-        corr_series  = df[[sales_col]+numeric_cols].corr()[sales_col].drop(sales_col).round(4) if numeric_cols else None
-
-        # ── KPI — FIX-2: CV على period_totals لا على df الخام ──
-        df_kpi = df.copy()
-        try:
-            df_kpi['period'] = df_kpi[date_col].dt.to_period(freq)
-            period_totals = df_kpi.groupby('period')[sales_col].sum().reset_index()
-            period_totals = period_totals.sort_values('period')
-            period_totals = period_totals.dropna(subset=[sales_col])
-        except Exception:
-            period_totals = pd.DataFrame(columns=['period', sales_col])
-
-        mom_growth = None
-        if len(period_totals) >= 2:
-            last  = period_totals[sales_col].iloc[-1]
-            prev  = period_totals[sales_col].iloc[-2]
-            mom_growth = (last - prev) / prev * 100 if prev > 0 else 0
-
-        # Growth Momentum: هل النمو يتسارع أم يتباطأ؟
-        growth_momentum = None
-        momentum_delta  = None
-        if len(period_totals) >= 4:
             try:
-                pct_ch = period_totals[sales_col].pct_change().dropna()
-                if len(pct_ch) >= 3:
-                    recent_growth = float(pct_ch.iloc[-2:].mean() * 100)
-                    prior_growth  = float(pct_ch.iloc[-4:-2].mean() * 100) if len(pct_ch) >= 4 else 0.0
-                    growth_momentum = recent_growth
-                    momentum_delta  = recent_growth - prior_growth
+                preview_df = (
+                    pd.read_csv(uploaded, nrows=0)
+                    if uploaded.name.endswith('.csv')
+                    else pd.read_excel(uploaded, nrows=0)
+                )
+                uploaded.seek(0)
+                cols = list(preview_df.columns)
             except Exception:
-                pass
+                cols = []
 
-        pareto_pct = None
-        if group_col and store_df is not None:
-            cumsum = store_df['total'].cumsum()
-            total  = store_df['total'].sum()
-            n80    = (cumsum <= total * 0.8).sum() + 1
-            pareto_pct = round(n80 / len(store_df) * 100, 1)
+            if cols:
+                # تخمين ذكي للأعمدة
+                date_default  = next((i for i, c in enumerate(cols)
+                                      if any(k in c.lower() for k in ['date','time','تاريخ'])), 0)
+                sales_default = next((i for i, c in enumerate(cols)
+                                      if any(k in c.lower() for k in ['sale','revenue','مبيعات','sales'])), 0)
 
-        if len(period_totals) > 0 and period_totals[sales_col].notna().any():
-            best_period_label  = str(period_totals.loc[period_totals[sales_col].idxmax(), 'period'])
-            worst_period_label = str(period_totals.loc[period_totals[sales_col].idxmin(), 'period'])
-            best_period_value  = float(period_totals[sales_col].max())
-            worst_period_value = float(period_totals[sales_col].min())
-            avg_period_value   = float(period_totals[sales_col].mean())
+                date_col = st.selectbox(
+                    T("date_col"), cols,
+                    index=date_default,
+                )
+                sales_col = st.selectbox(
+                    T("sales_col"), cols,
+                    index=sales_default,
+                )
+
+        st.divider()
+
+        # ── إعدادات متقدمة ───────────────────────
+        with st.expander("⚙️ Advanced Settings", expanded=False):
+            forecast_weeks = st.slider("Forecast Periods", 4, 26, 12)
+            analysis_type_label = st.selectbox(
+                "Analysis Type",
+                ["Executive Summary", "Performance Analysis",
+                 "Problem Detection", "Profit Improvement"],
+            )
+            analysis_type_map = {
+                "Executive Summary":     "executive_summary",
+                "Performance Analysis":  "performance_analysis",
+                "Problem Detection":     "problem_detection",
+                "Profit Improvement":    "profit_improvement",
+            }
+            analysis_type = analysis_type_map[analysis_type_label]
+        st.divider()
+
+        # ── زر التحليل ───────────────────────────
+        analyze_clicked = False
+        if uploaded:
+            analyze_clicked = st.button(
+                T("analyze_btn"),
+                type="primary",
+                use_container_width=True,
+            )
         else:
-            best_period_label  = 'N/A'
-            worst_period_label = 'N/A'
-            best_period_value  = 0.0
-            worst_period_value = 0.0
-            avg_period_value   = 0.0
+            st.info(T("upload_prompt"))
 
-        # FIX-2: CV على الـ period_totals (مجمّعة) لا على صفوف المعاملات
-        if len(period_totals) >= 2:
-            pt_mean = float(period_totals[sales_col].mean())
-            pt_std  = float(period_totals[sales_col].std())
-            cv_pct  = round(pt_std / pt_mean * 100, 1) if pt_mean > 0 else 0.0
+        return uploaded, company_name, date_col, sales_col, \
+               forecast_weeks, analysis_type, analyze_clicked
+
+
+# ════════════════════════════════════════════════
+# PIPELINE RUNNER
+# ════════════════════════════════════════════════
+def run_pipeline(uploaded, company_name, date_col, sales_col,
+                 forecast_weeks, analysis_type):
+    """يشغّل الـ pipeline الكامل ويعرض التقدم"""
+
+    from orchestrator_agent import create_orchestrator, run_pipeline_with_progress
+
+    # قراءة الملف
+    try:
+        if uploaded.name.endswith('.csv'):
+            df = pd.read_csv(uploaded)
         else:
-            cv_pct = 0.0
+            df = pd.read_excel(uploaded)
+    except Exception as e:
+        st.error(f"❌ فشل قراءة الملف: {e}")
+        return None
 
-        kpi_data = {
-            'mom_growth':       mom_growth,
-            'growth_momentum':  growth_momentum,
-            'momentum_delta':   momentum_delta,
-            'pareto_pct':       pareto_pct,
-            'best_period':      best_period_label,
-            'worst_period':     worst_period_label,
-            'best_period_value':  best_period_value,
-            'worst_period_value': worst_period_value,
-            'avg_period_value':   avg_period_value,
-            'period_count':     len(period_totals),
-            'cv_pct':           cv_pct,
-        }
+    # إنشاء الـ Orchestrator
+    orch = create_orchestrator(
+        lang           = st.session_state.lang,
+        company_name   = company_name,
+        date_col       = date_col,
+        sales_col      = sales_col,
+        forecast_weeks = forecast_weeks,
+    )
+    orch.analysis_type = analysis_type
 
-        from src.decision_engine import generate_decisions, decisions_to_df, get_summary_stats
-        decisions      = generate_decisions(df, date_col, sales_col, group_col, lang)
-        decisions_df   = decisions_to_df(decisions, lang)
-        decision_stats = get_summary_stats(decisions)
+    # شريط التقدم
+    st.markdown("---")
+    st.markdown("#### ⚙️ Running Pipeline...")
+    progress_bar = st.progress(0)
 
-        st.session_state.summary        = summary
-        st.session_state.store_df       = store_df
-        st.session_state.monthly_df     = monthly_df
-        st.session_state.holiday_df     = holiday_df
-        st.session_state.corr_series    = corr_series
-        st.session_state.group_col      = group_col
-        st.session_state.kpi_data       = kpi_data
-        st.session_state.decisions      = decisions
-        st.session_state.decisions_df   = decisions_df
-        st.session_state.decision_stats = decision_stats
-        st.session_state.period_totals  = period_totals
+    # تشغيل الـ pipeline
+    ctx = run_pipeline_with_progress(
+        orch,
+        dataframe          = df,
+        streamlit_progress = progress_bar,
+    )
 
-    with st.spinner("🔮 " + ("Forecasting..." if lang=="en" else "جاري التنبؤ..." if lang=="ar" else "Prévision...")):
-        from src.forecaster import train_and_forecast, get_forecast_summary
-        n_periods = st.session_state.forecast_periods
+    progress_bar.empty()
+    return ctx
 
-        has_qa_errors = any(
-            'error' in line.lower() or 'issue' in line.lower()
-            for line in st.session_state.get('report', [])
-        )
 
-        group_col_avg = None
-        if store_df is not None and len(store_df) > 0:
-            group_col_avg = float(store_df['avg_weekly'].iloc[0])
+# ════════════════════════════════════════════════
+# RENDER: PIPELINE STATUS
+# ════════════════════════════════════════════════
+def render_pipeline_status(ctx):
+    """عرض حالة كل agent بعد التشغيل"""
+    with st.expander("🔍 Pipeline Status", expanded=False):
+        cols = st.columns(len(ctx.agent_statuses) or 1)
+        for i, s in enumerate(ctx.agent_statuses):
+            with cols[i % len(cols)]:
+                icon  = "✅" if s.success else "❌"
+                color = "#4ADE80" if s.success else "#F87171"
+                st.markdown(
+                    f'<div class="agent-card">'
+                    f'<span style="color:{color}">{icon}</span> '
+                    f'<b>{s.name}</b><br/>'
+                    f'<span style="color:#8B92A5;font-size:11px">{s.duration_sec}s</span>'
+                    f'{"<br/><span style=color:#F87171;font-size:11px>"+s.error[:60]+"...</span>" if s.error else ""}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
 
-        forecast, prophet_data = train_and_forecast(
-            df, weeks=n_periods,
-            date_col=date_col, sales_col=sales_col,
-            has_qa_errors=has_qa_errors,
-        )
+        # تحذيرات
+        if ctx.warnings:
+            st.markdown("**⚠️ Warnings:**")
+            for w in ctx.warnings:
+                st.warning(w, icon="⚠️")
 
-        # FIX-1: تمرير prophet_data لعزل الصفوف المستقبلية بشكل صحيح
-        forecast_summary = get_forecast_summary(
-            forecast,
-            prophet_data=prophet_data,
-            group_col_avg=group_col_avg
-        )
+        # أخطاء
+        if ctx.errors:
+            st.markdown("**❌ Errors:**")
+            for e in ctx.errors:
+                st.error(e)
 
-        st.session_state.forecast         = forecast
-        st.session_state.prophet_data     = prophet_data
-        st.session_state.forecast_summary = forecast_summary
 
-    with st.spinner("🤖 " + ("Building..." if lang=="en" else "بناء..." if lang=="ar" else "Construction...")):
-        from src.agent import build_system_prompt
-        system_prompt = build_system_prompt(
-            st.session_state.summary, st.session_state.store_df,
-            st.session_state.holiday_df, st.session_state.corr_series,
-            st.session_state.forecast_summary,
-            kpi_data=kpi_data,
-            lang=lang, company_name=cname
-        )
-        st.session_state.system_prompt = system_prompt
-        st.session_state.analyzed      = True
-        st.session_state.chat_history  = []
+# ════════════════════════════════════════════════
+# RENDER: KPI CARDS
+# ════════════════════════════════════════════════
+def render_kpi_cards(ctx):
+    """بطاقات KPI الرئيسية"""
+    summary = ctx.summary or {}
+    fc      = ctx.forecast_summary or {}
 
-    st.success("✅ " + ("Done!" if lang=="en" else "اكتمل!" if lang=="ar" else "Terminé!"))
-    st.rerun()
+    total   = summary.get('total_sales', 0)
+    avg     = summary.get('avg_weekly_sales', 0)
+    peak    = summary.get('max_single_week', 0)
+    fc12    = fc.get('next_12_weeks', 0)
+    conf    = fc.get('confidence_level', 'Medium')
+    conf_icon = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(conf, "🟡")
 
-# ─── عرض النتائج ─────────────────────────────────────────
-if st.session_state.analyzed:
-    summary          = st.session_state.summary
-    df               = st.session_state.df
-    date_col         = st.session_state.date_col
-    sales_col        = st.session_state.sales_col
-    forecast_summary = st.session_state.forecast_summary
-    T                = get_translations(lang)
-    cname            = st.session_state.get("company_name","").strip()
-    kpi_data         = st.session_state.get('kpi_data', {})
-    decision_stats   = st.session_state.get('decision_stats', {})
+    def money(v):
+        if v >= 1e9:  return f"${v/1e9:.1f}B"
+        if v >= 1e6:  return f"${v/1e6:.1f}M"
+        if v >= 1e3:  return f"${v/1e3:.0f}K"
+        return f"${v:.0f}"
 
-    if cname:
-        st.markdown(f'<span class="company-badge">🏢 {cname}</span>', unsafe_allow_html=True)
+    c1, c2, c3, c4, c5 = st.columns(5)
+    cards = [
+        (c1, money(total),   T("total_sales"),   "#7C9EFF"),
+        (c2, money(avg),     T("avg_period"),     "#4ADE80"),
+        (c3, money(peak),    T("best_period"),    "#FBBF24"),
+        (c4, money(fc12),    "12-Period Forecast","#A78BFA"),
+        (c5, f"{conf_icon} {conf}", "Forecast Confidence", "#60A5FA"),
+    ]
+    for col, val, label, color in cards:
+        with col:
+            st.markdown(
+                f'<div class="kpi-card">'
+                f'<p class="kpi-value" style="color:{color}">{val}</p>'
+                f'<p class="kpi-label">{label}</p>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
-    tab_labels = {
-        "en": ["📊 Overview", "🎯 Decision Board", "📈 Charts", "🔮 Forecast", "💬 Performance Overview"],
-        "ar": ["📊 نظرة عامة", "🎯 لوحة القرارات", "📈 الرسوم", "🔮 التوقعات", "💬 نظرة الأداء"],
-        "fr": ["📊 Vue d'ensemble", "🎯 Tableau de Décision", "📈 Graphiques", "🔮 Prévisions", "💬 Aperçu Performance"],
+
+# ════════════════════════════════════════════════
+# RENDER: CHARTS (من VisualAgent)
+# ════════════════════════════════════════════════
+def render_charts(ctx):
+    """عرض الرسوم البيانية المحفوظة من VisualAgent"""
+    charts = ctx.chart_paths or []
+
+    if not charts:
+        st.info("لم يتم إنشاء رسوم بيانية — تحقق من Pipeline Status")
+        return
+
+    chart_labels = {
+        "01_sales_trend":       "📈 " + T("sales_trend"),
+        "02_store_comparison":  "🏪 " + T("sales_by") + f" {ctx.group_col or 'Group'}",
+        "03_monthly_trend":     "📅 " + T("monthly_sales"),
+        "04_holiday_impact":    "🎉 Holiday Impact",
+        "05_correlations":      "🔗 " + T("correlation"),
+        "06_forecast":          "🔮 " + T("forecast_title"),
     }
-    tabs = st.tabs(tab_labels.get(lang, tab_labels["en"]))
-    tab1, tab_dec, tab2, tab3, tab4 = tabs
 
-    # ── Tab 1: Overview ───────────────────────────────────
-    with tab1:
-        st.subheader(T["data_summary"])
-        col1,col2,col3,col4 = st.columns(4)
-        with col1: st.metric(T["total_records"], f"{summary['total_records']:,}")
-        with col2: st.metric(T["total_sales"],   f"${summary['total_sales']:,.0f}")
-        with col3: st.metric(T["avg_period"],    f"${summary['avg_weekly_sales']:,.0f}")
-        with col4: st.metric(T["best_period"],   f"${summary['max_single_week']:,.0f}")
+    # عرض الرسوم في شبكة 2×3
+    pairs = [charts[i:i+2] for i in range(0, len(charts), 2)]
+    for pair in pairs:
+        cols = st.columns(len(pair))
+        for col, path in zip(cols, pair):
+            with col:
+                key = next((k for k in chart_labels if k in path), path)
+                label = chart_labels.get(key, path)
+                st.markdown(f"**{label}**")
+                st.image(path, use_container_width=True)
 
-        st.divider()
 
-        # Volatility Warning — يستخدم CV المصحح
-        cv_pct     = kpi_data.get('cv_pct', 0)
-        volatility = forecast_summary.get('volatility', {})
-        if volatility and cv_pct > 40:
-            vol_msgs = {
-                "en": f"{volatility.get('badge','🔴')} **Revenue Volatility: {volatility.get('level','High')} (CV = {cv_pct:.1f}%)** — {volatility.get('risk','')}",
-                "ar": f"{volatility.get('badge','🔴')} **تقلب الإيرادات: {volatility.get('level','عالي')} (CV = {cv_pct:.1f}%)** — {volatility.get('risk','')}",
-                "fr": f"{volatility.get('badge','🔴')} **Volatilité: {volatility.get('level','Élevée')} (CV = {cv_pct:.1f}%)** — {volatility.get('risk','')}",
-            }
-            st.warning(vol_msgs.get(lang, vol_msgs["en"]))
+# ════════════════════════════════════════════════
+# RENDER: FORECAST TAB
+# ════════════════════════════════════════════════
+def render_forecast_tab(ctx):
+    """تبويب التوقعات"""
+    fc = ctx.forecast_summary or {}
 
-        # Sanity Check Warning
-        sanity = forecast_summary.get('sanity_check', {})
-        if sanity and not sanity.get('passed', True):
-            for warn in sanity.get('warnings', []):
-                st.error(warn)
+    if not fc:
+        st.info("التوقعات غير متاحة — تحقق من Pipeline Status")
+        return
 
-        # Model Transparency Badge
-        model_type = forecast_summary.get('model_type', '')
-        if model_type:
-            model_display = {
-                'HW_seasonal_52':   '📐 Model: Holt-Winters Seasonal (52-period)',
-                'HW_seasonal_26':   '📐 Model: Holt-Winters Seasonal (26-period)',
-                'HW_trend_only':    '📐 Model: Holt-Winters Trend (no seasonal — < 26 periods)',
-                'HW_level_only':    '📐 Model: Holt-Winters Level only (< 4 periods)',
-                'HW_trend_fallback':'📐 Model: Holt-Winters Trend (fallback)',
-                'HW_level_fallback':'📐 Model: Holt-Winters Level (fallback)',
-                'mean_fallback':    '⚠️ Model: Mean forecast (model fitting failed)',
-            }
-            conf_level = forecast_summary.get('confidence_level','Medium')
-            conf_icon  = {"High":"🟢","Medium":"🟡","Low":"🔴"}.get(conf_level,"🟡")
-            scenario_method = forecast_summary.get('scenario_method','')
-            scenario_display = {
-                'empirical_percentile': 'Scenarios: empirical 10th/90th percentile of historical changes',
-                'cv_scaled_fallback':   'Scenarios: CV-scaled (limited history)',
-            }.get(scenario_method, '')
-            st.caption(
-                f"{model_display.get(model_type, f'Model: {model_type}')} | "
-                f"{conf_icon} Forecast Confidence: {conf_level}"
-                + (f" | {scenario_display}" if scenario_display else "")
-            )
+    # ── KPI التوقعات ─────────────────────────────
+    def money(v):
+        if v >= 1e6: return f"${v/1e6:.2f}M"
+        if v >= 1e3: return f"${v/1e3:.1f}K"
+        return f"${v:.0f}"
 
-        kpi_title = {"en":"📊 Smart KPIs","ar":"📊 مؤشرات ذكية","fr":"📊 KPIs Intelligents"}
-        st.subheader(kpi_title.get(lang,"📊 Smart KPIs"))
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric(T("next_4"),  money(fc.get('next_4_weeks', 0)))
+    with c2:
+        st.metric(T("next_8"),  money(fc.get('next_8_weeks', 0)))
+    with c3:
+        st.metric(T("next_12"), money(fc.get('next_12_weeks', 0)))
 
-        k1, k2, k3, k4 = st.columns(4)
-
-        # KPI 1: MoM Growth
-        with k1:
-            if kpi_data.get('mom_growth') is not None:
-                st.metric(
-                    "MoM Growth" if lang=="en" else "نمو دورة/دورة" if lang=="ar" else "Croissance MoM",
-                    f"{kpi_data['mom_growth']:+.1f}%",
-                    delta=f"{kpi_data['mom_growth']:+.1f}%"
-                )
-
-        # KPI 2: Growth Momentum (جديد — تسارع أم تباطؤ؟)
-        with k2:
-            gm = kpi_data.get('growth_momentum')
-            md = kpi_data.get('momentum_delta')
-            if gm is not None and md is not None:
-                momentum_label = {
-                    "en": "Growth Momentum",
-                    "ar": "زخم النمو",
-                    "fr": "Momentum Croissance",
-                }
-                momentum_help = {
-                    "en": "Avg growth rate of last 2 periods vs prior 2 periods. Positive = accelerating.",
-                    "ar": "متوسط نمو آخر فترتين مقارنة بالفترتين السابقتين. موجب = تسارع.",
-                    "fr": "Croissance moyenne des 2 dernières périodes vs 2 précédentes.",
-                }
-                st.metric(
-                    momentum_label.get(lang,"Growth Momentum"),
-                    f"{gm:+.1f}%/period",
-                    delta=f"{md:+.1f}% vs prior",
-                    help=momentum_help.get(lang,"")
-                )
-            elif kpi_data.get('pareto_pct'):
-                # fallback إلى Pareto إذا ما في بيانات كافية للـ momentum
-                conc_risk = (
-                    "🔴 Critical dependency" if kpi_data['pareto_pct'] < 20
-                    else "🟡 High concentration" if kpi_data['pareto_pct'] < 35
-                    else "🟢 Healthy distribution"
-                )
-                st.metric(
-                    "80% Revenue from" if lang=="en" else "80% الإيراد من" if lang=="ar" else "80% Revenu par",
-                    f"Top {kpi_data['pareto_pct']:.0f}%",
-                    delta=conc_risk
-                )
-
-        # KPI 3: Best Period مع سياق
-        with k3:
-            best_val = kpi_data.get('best_period_value', 0)
-            avg_val  = kpi_data.get('avg_period_value', 0)
-            best_delta = f"+{(best_val - avg_val)/avg_val*100:.0f}% vs avg" if avg_val > 0 else None
-            st.metric(
-                "Best Period" if lang=="en" else "أفضل فترة" if lang=="ar" else "Meilleure Période",
-                kpi_data.get('best_period','N/A'),
-                delta=best_delta,
-                help=f"${best_val:,.0f} vs avg ${avg_val:,.0f}" if avg_val > 0 else None
-            )
-
-        # KPI 4: Worst Period مع سياق
-        with k4:
-            worst_val = kpi_data.get('worst_period_value', 0)
-            worst_delta = f"{(worst_val - avg_val)/avg_val*100:.0f}% vs avg" if avg_val > 0 else None
-            st.metric(
-                "Worst Period" if lang=="en" else "أسوأ فترة" if lang=="ar" else "Pire Période",
-                kpi_data.get('worst_period','N/A'),
-                delta=worst_delta,
-                delta_color="inverse",
-                help=f"${worst_val:,.0f} vs avg ${avg_val:,.0f}" if avg_val > 0 else None
-            )
-
-        # Pareto row (إذا ما انعرض في k2)
-        if kpi_data.get('pareto_pct') and kpi_data.get('growth_momentum') is not None:
-            st.divider()
-            p1, p2 = st.columns(2)
-            with p1:
-                conc_risk = (
-                    "🔴 Critical dependency" if kpi_data['pareto_pct'] < 20
-                    else "🟡 High concentration" if kpi_data['pareto_pct'] < 35
-                    else "🟢 Healthy distribution"
-                )
-                st.metric(
-                    "80% Revenue from" if lang=="en" else "80% الإيراد من" if lang=="ar" else "80% Revenu par",
-                    f"Top {kpi_data['pareto_pct']:.0f}%",
-                    delta=conc_risk
-                )
-            with p2:
-                st.metric(
-                    "Revenue Volatility (CV)" if lang=="en" else "تقلب الإيرادات (CV)" if lang=="ar" else "Volatilité (CV)",
-                    f"{cv_pct:.1f}%",
-                    delta=volatility.get('level','') if volatility else '',
-                    delta_color="inverse" if cv_pct > 40 else "normal"
-                )
-
-        st.divider()
-        st.subheader(T["ai_analysis"])
-        analysis_type = st.selectbox(T["choose_analysis"], options=T["analysis_types"])
-        prompts       = T["prompts"]
-
-        if st.button(f"🤖 {T['btn_generate']}", type="primary"):
-            with st.spinner(T["generating_ai"]):
-                from src.agent import ask_agent
-                result_text, _ = ask_agent(prompts[analysis_type], st.session_state.system_prompt, [])
-                st.session_state.ai_result      = result_text
-                st.session_state.ai_result_type = analysis_type
-
-        if 'ai_result' in st.session_state:
-            st.markdown(f"### {st.session_state.ai_result_type}")
-            st.markdown(st.session_state.ai_result)
-            st.download_button(T["download_txt"], st.session_state.ai_result,
-                               file_name="analysis.txt", mime="text/plain")
-
-        st.divider()
-
-        if st.button(T["download_pdf"], type="secondary"):
-            with st.spinner(T["generating_pdf"]):
-                from src.pdf_gen import generate_pdf
-                pdf_bytes = generate_pdf(
-                    df=df, date_col=date_col, sales_col=sales_col,
-                    summary=summary,
-                    store_df=st.session_state.store_df,
-                    corr_series=st.session_state.corr_series,
-                    forecast=st.session_state.forecast,
-                    prophet_data=st.session_state.prophet_data,
-                    forecast_summary=forecast_summary,
-                    monthly_df=st.session_state.monthly_df,
-                    group_col=st.session_state.group_col,
-                    company_name=cname, T=T,
-                    ai_result=st.session_state.get('ai_result'),
-                    ai_type=st.session_state.get('ai_result_type'),
-                    include_action_plan=st.session_state.get('include_pap', False),
-                    lang=lang,
-                )
-                st.download_button(T["download_pdf_now"], pdf_bytes,
-                    file_name=f"report_{pd.Timestamp.now().strftime('%Y%m%d')}.pdf",
-                    mime="application/pdf")
-
-        st.divider()
-        with st.expander(T["cleaning_report"]):
-            for line in st.session_state.report: st.text(line)
-        st.subheader(T["data_preview"])
-        st.dataframe(df.head(20), use_container_width=True)
-        if st.session_state.store_df is not None:
-            st.subheader(f"{T['performance_by']} {st.session_state.group_col}")
-            st.dataframe(st.session_state.store_df, use_container_width=True)
-
-    # ── Tab 2: Decision Board ─────────────────────────────
-    with tab_dec:
-        dec_titles = {
-            "en": "🎯 Decision Board",
-            "ar": "🎯 لوحة القرارات",
-            "fr": "🎯 Tableau de Décision",
-        }
-        st.subheader(dec_titles.get(lang,"🎯 Decision Board"))
-
-        if decision_stats:
-            c1,c2,c3,c4 = st.columns(4)
-            with c1: st.metric("✅ Invest" if lang=="en" else "✅ استثمر" if lang=="ar" else "✅ Investir", decision_stats.get('invest',0))
-            with c2: st.metric("👁️ Monitor" if lang=="en" else "👁️ راقب" if lang=="ar" else "👁️ Surveiller", decision_stats.get('monitor',0))
-            with c3: st.metric("🔧 Restructure" if lang=="en" else "🔧 أعد الهيكلة" if lang=="ar" else "🔧 Restructurer", decision_stats.get('restructure',0))
-            with c4: st.metric("🔴 Critical" if lang=="en" else "🔴 حرج" if lang=="ar" else "🔴 Critique", decision_stats.get('critical_count',0))
-
-            if decision_stats.get('critical_units'):
-                critical_label = {
-                    "en": f"⚠️ Units requiring immediate attention: **{', '.join(decision_stats['critical_units'])}**",
-                    "ar": f"⚠️ وحدات تحتاج تدخل فوري: **{', '.join(decision_stats['critical_units'])}**",
-                    "fr": f"⚠️ Unités nécessitant une action immédiate : **{', '.join(decision_stats['critical_units'])}**",
-                }
-                st.warning(critical_label.get(lang, critical_label["en"]))
-
-            impact_label = {
-                "en": f"💰 Total estimated financial impact: **${decision_stats.get('total_impact',0):,.0f}**",
-                "ar": f"💰 إجمالي الأثر المالي المقدر: **${decision_stats.get('total_impact',0):,.0f}**",
-                "fr": f"💰 Impact financier total estimé : **${decision_stats.get('total_impact',0):,.0f}**",
-            }
-            st.info(impact_label.get(lang, impact_label["en"]))
-
-        st.divider()
-
-        if st.session_state.decisions_df is not None and len(st.session_state.decisions_df) > 0:
-            decisions_df = st.session_state.decisions_df
-            filter_label = {"en":"Filter by rating:","ar":"فلتر حسب التقييم:","fr":"Filtrer par note:"}
-            all_label    = {"en":"All","ar":"الكل","fr":"Tout"}
-            rating_filter = st.radio(filter_label.get(lang,"Filter:"), [all_label.get(lang,"All"), "🟢", "🟡", "🔴"], horizontal=True)
-            rating_col = decisions_df.columns[0]
-            filtered_df = decisions_df if rating_filter == all_label.get(lang,"All") else decisions_df[decisions_df[rating_col] == rating_filter]
-            st.dataframe(filtered_df, use_container_width=True, hide_index=True, height=min(600, 50 + len(filtered_df) * 38))
-            csv_label = {"en":"📥 Download Decisions CSV","ar":"📥 تنزيل القرارات CSV","fr":"📥 Télécharger CSV"}
-            st.download_button(csv_label.get(lang, csv_label["en"]), data=filtered_df.to_csv(index=False),
-                               file_name=f"decisions_{pd.Timestamp.now().strftime('%Y%m%d')}.csv", mime="text/csv")
-        else:
-            no_group = {
-                "en": "Decision Board requires a group column (Store, Branch, Region...) in your data.",
-                "ar": "لوحة القرارات تحتاج عمود تجميع (متجر، فرع، منطقة...) في بياناتك.",
-                "fr": "Le tableau de décision nécessite une colonne de groupe dans vos données.",
-            }
-            st.info(no_group.get(lang, no_group["en"]))
-
-    # ── Tab 3: Charts ─────────────────────────────────────
-    with tab2:
-        import plotly.graph_objects as go
-
-        st.subheader(T["sales_trend"])
-        weekly = df.groupby(date_col)[sales_col].sum().reset_index().sort_values(date_col)
-        weekly['ma4'] = weekly[sales_col].rolling(4).mean()
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=weekly[date_col], y=weekly[sales_col],
-            fill='tozeroy', fillcolor='rgba(37,99,235,0.08)', line=dict(color='#2563EB', width=1.5),
-            name='Sales', hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'))
-        fig.add_trace(go.Scatter(x=weekly[date_col], y=weekly['ma4'],
-            line=dict(color='#DC2626', width=2.5), name=T["period_avg"],
-            hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'))
-        fig.update_layout(title=chart_title(T["sales_trend"]), hovermode='x unified', height=400,
-            legend=dict(orientation='h', yanchor='bottom', y=1.02),
-            yaxis=dict(tickprefix='$', tickformat=',.0f'),
-            plot_bgcolor='white', paper_bgcolor='white',
-            xaxis=dict(showgrid=True, gridcolor='#F3F4F6'), yaxis_gridcolor='#F3F4F6')
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.subheader(T["monthly_sales"])
-        monthly_df = st.session_state.monthly_df
-        months_str = [str(m) for m in monthly_df['month']]
-        vals       = monthly_df['total'].tolist()
-        bar_colors = ['#16A34A' if v >= pd.Series(vals).quantile(0.6)
-                      else '#D97706' if v >= pd.Series(vals).quantile(0.3)
-                      else '#DC2626' for v in vals]
-        fig2 = go.Figure(go.Bar(x=months_str, y=vals, marker_color=bar_colors,
-            text=[f'${v/1e6:.1f}M' if v>=1e6 else f'${v/1e3:.0f}K' for v in vals],
-            textposition='outside', hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'))
-        fig2.update_layout(title=chart_title(T["monthly_sales"]), height=400,
-            yaxis=dict(tickprefix='$', tickformat=',.0f'),
-            plot_bgcolor='white', paper_bgcolor='white', yaxis_gridcolor='#F3F4F6')
-        st.plotly_chart(fig2, use_container_width=True)
-
-        if st.session_state.store_df is not None:
-            group_col = st.session_state.group_col
-            store_df  = st.session_state.store_df
-            st.subheader(f"{T['sales_by']} {group_col}")
-            top10 = store_df.head(10)
-            fig3 = go.Figure(go.Bar(x=top10[group_col].astype(str), y=top10['total'],
-                marker_color='#2563EB', opacity=0.85,
-                text=[f'${v/1e6:.1f}M' if v>=1e6 else f'${v/1e3:.0f}K' for v in top10['total']],
-                textposition='outside',
-                hovertemplate=f'{group_col}: %{{x}}<br>$%{{y:,.0f}}<extra></extra>'))
-            fig3.update_layout(title=chart_title(f"{T['sales_by']} {group_col}"), height=400,
-                yaxis=dict(tickprefix='$', tickformat=',.0f'),
-                plot_bgcolor='white', paper_bgcolor='white', yaxis_gridcolor='#F3F4F6')
-            st.plotly_chart(fig3, use_container_width=True)
-
-        if st.session_state.corr_series is not None:
-            st.subheader(T["correlation"])
-            corr = st.session_state.corr_series
-            corr_colors = ['#16A34A' if v>0 else '#DC2626' for v in corr.values]
-            fig4 = go.Figure(go.Bar(x=corr.values, y=corr.index, orientation='h',
-                marker_color=corr_colors, opacity=0.85,
-                text=[f'{v:.4f}' for v in corr.values], textposition='outside',
-                hovertemplate='%{y}: %{x:.4f}<extra></extra>'))
-            fig4.update_layout(title=chart_title(T["correlation"]), height=350,
-                plot_bgcolor='white', paper_bgcolor='white', xaxis_gridcolor='#F3F4F6')
-            fig4.add_vline(x=0, line_color='black', line_width=0.8)
-            st.plotly_chart(fig4, use_container_width=True)
-
-    # ── Tab 4: Forecast ───────────────────────────────────
-    with tab3:
-        import plotly.graph_objects as go
-        st.subheader(T["forecast_title"])
-
-        # Confidence Badge
-        conf_level = forecast_summary.get('confidence_level', 'Medium')
-        conf_color = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(conf_level, "🟡")
-        model_type = forecast_summary.get('model_type', '')
-        model_disp = {
-            'HW_seasonal_52':   'Holt-Winters Seasonal (52-period)',
-            'HW_seasonal_26':   'Holt-Winters Seasonal (26-period)',
-            'HW_trend_only':    'Holt-Winters Trend-only',
-            'HW_level_only':    'Holt-Winters Level-only',
-            'HW_trend_fallback':'Holt-Winters Trend (fallback)',
-            'HW_level_fallback':'Holt-Winters Level (fallback)',
-            'mean_fallback':    'Mean forecast (model fitting failed)',
-        }.get(model_type, model_type)
-
-        st.info(
-            f"{conf_color} **Forecast Confidence: {conf_level}** | "
-            f"📐 {model_disp}"
-        )
-
-        # Sanity Check
-        sanity = forecast_summary.get('sanity_check', {})
-        if sanity and not sanity.get('passed', True):
-            for warn in sanity.get('warnings', []):
-                st.error(warn)
-
-        # FIX-4: السيناريوهات بدون احتمالات وهمية — تستخدم spread%
-        scenario_title = {
-            "en": "📊 12-Period Forecast Scenarios",
-            "ar": "📊 سيناريوهات 12 فترة",
-            "fr": "📊 Scénarios — 12 Périodes"
-        }
-        st.subheader(scenario_title.get(lang, scenario_title["en"]))
-
-        sc1, sc2, sc3 = st.columns(3)
-        bear_12 = forecast_summary.get('bear_12_weeks', forecast_summary['next_12_weeks'] * 0.75)
-        bull_12 = forecast_summary.get('bull_12_weeks', forecast_summary['next_12_weeks'] * 1.25)
-        base_12 = forecast_summary['next_12_weeks']
-        bear_spread = forecast_summary.get('bear_spread_pct', -25.0)
-        bull_spread = forecast_summary.get('bull_spread_pct',  25.0)
-        scenario_method = forecast_summary.get('scenario_method', '')
-
-        scenario_basis_label = {
-            'empirical_percentile': "Based on historical 10th/90th percentile" if lang=="en"
-                                    else "مبني على النسبة المئوية 10/90 التاريخية" if lang=="ar"
-                                    else "Basé sur le 10e/90e percentile historique",
-            'cv_scaled_fallback':   "Based on CV-scaled range (limited history)" if lang=="en"
-                                    else "مبني على نطاق CV (تاريخ محدود)" if lang=="ar"
-                                    else "Basé sur la plage CV (historique limité)",
-        }.get(scenario_method, "")
-
-        with sc1:
-            st.markdown(
-                f'<div class="scenario-bear"><strong>🐻 Bear Case</strong><br>'
-                f'<span style="font-size:1.4rem;font-weight:700;color:#DC2626">${bear_12:,.0f}</span><br>'
-                f'<small>{bear_spread:+.1f}% from base</small></div>',
-                unsafe_allow_html=True
-            )
-        with sc2:
-            st.markdown(
-                f'<div class="scenario-base"><strong>📌 Base Case</strong><br>'
-                f'<span style="font-size:1.4rem;font-weight:700;color:#2563EB">${base_12:,.0f}</span><br>'
-                f'<small>Trend continuation</small></div>',
-                unsafe_allow_html=True
-            )
-        with sc3:
-            st.markdown(
-                f'<div class="scenario-bull"><strong>🚀 Bull Case</strong><br>'
-                f'<span style="font-size:1.4rem;font-weight:700;color:#16A34A">${bull_12:,.0f}</span><br>'
-                f'<small>+{bull_spread:.1f}% from base</small></div>',
-                unsafe_allow_html=True
-            )
-
-        if scenario_basis_label:
-            st.caption(f"📊 {scenario_basis_label}")
-
-        # Decision Rule
-        decision_rule = forecast_summary.get('decision_rule', '')
-        if decision_rule:
-            dr_label = {
-                "en": f"💡 **Decision Rule:** {decision_rule}",
-                "ar": f"💡 **قاعدة القرار:** {decision_rule}",
-                "fr": f"💡 **Règle de Décision:** {decision_rule}",
-            }
-            st.info(dr_label.get(lang, dr_label["en"]))
-
-        st.divider()
-
-        col1,col2,col3 = st.columns(3)
-        with col1: st.metric(T["next_4"],  f"${forecast_summary['next_4_weeks']:,.0f}")
-        with col2: st.metric(T["next_8"],  f"${forecast_summary['next_8_weeks']:,.0f}")
-        with col3: st.metric(T["next_12"], f"${forecast_summary['next_12_weeks']:,.0f}")
-
-        forecast     = st.session_state.forecast
-        prophet_data = st.session_state.prophet_data
-
-        # FIX-1: استخدام last_historical_date من attrs لعزل الصفوف المستقبلية
-        last_hist_date = forecast.attrs.get('last_historical_date', prophet_data['ds'].max())
-        last_hist_date = pd.Timestamp(last_hist_date)
-        future = forecast[forecast['ds'] > last_hist_date].copy()
-
-        fig5 = go.Figure()
-        fig5.add_trace(go.Scatter(
-            x=prophet_data['ds'], y=prophet_data['y'],
-            line=dict(color='#2563EB', width=1.5), name=T["historical"],
-            hovertemplate='%{x}<br>$%{y:,.0f}<extra></extra>'
-        ))
-        if len(future) > 0:
-            fig5.add_trace(go.Scatter(
-                x=future['ds'], y=future['yhat_upper'],
-                line=dict(width=0), showlegend=False, hoverinfo='skip', fill=None
-            ))
-            fig5.add_trace(go.Scatter(
-                x=future['ds'], y=future['yhat_lower'],
-                fill='tonexty', fillcolor='rgba(22,163,74,0.08)',
-                line=dict(width=0), showlegend=True, hoverinfo='skip',
-                name=f'Scenario Range ({bear_spread:+.0f}% / +{bull_spread:.0f}%)'
-            ))
-            fig5.add_trace(go.Scatter(
-                x=future['ds'], y=future['yhat'],
-                line=dict(color='#0D7377', width=2.5, dash='dash'), name='Base Case',
-                hovertemplate='%{x}<br>Base: $%{y:,.0f}<extra></extra>'
-            ))
-            fig5.add_trace(go.Scatter(
-                x=future['ds'], y=future['yhat_lower'],
-                line=dict(color='#DC2626', width=1, dash='dot'),
-                name=f'Bear ({bear_spread:+.0f}%)',
-                hovertemplate='%{x}<br>Bear: $%{y:,.0f}<extra></extra>'
-            ))
-            fig5.add_trace(go.Scatter(
-                x=future['ds'], y=future['yhat_upper'],
-                line=dict(color='#16A34A', width=1, dash='dot'),
-                name=f'Bull (+{bull_spread:.0f}%)',
-                hovertemplate='%{x}<br>Bull: $%{y:,.0f}<extra></extra>'
-            ))
-        fig5.add_vline(
-            x=str(last_hist_date.date()),
-            line_color='gray', line_width=1, line_dash='dot',
-            annotation_text="Forecast start", annotation_position="top"
-        )
-        fig5.update_layout(
-            title=chart_title(T["forecast_title"]), height=500,
-            hovermode='x unified',
-            legend=dict(orientation='h', yanchor='bottom', y=1.02),
-            yaxis=dict(tickprefix='$', tickformat=',.0f'),
-            plot_bgcolor='white', paper_bgcolor='white',
-            xaxis_gridcolor='#F3F4F6', yaxis_gridcolor='#F3F4F6'
-        )
-        st.plotly_chart(fig5, use_container_width=True)
-
-        # Peak Date
-        today = pd.Timestamp.now().normalize()
-        peak_date_str = forecast_summary['peak_week']
-        try:
-            peak_dt = pd.Timestamp(peak_date_str)
-            is_past = peak_dt < today
-        except Exception:
-            is_past = False
-
-        if is_past:
-            peak_warn = {
-                "en": f"⚠️ **Note:** The projected peak date ({peak_date_str}) has already passed.",
-                "ar": f"⚠️ **ملاحظة:** تاريخ الذروة ({peak_date_str}) قد مضى.",
-                "fr": f"⚠️ **Note:** La date de pic ({peak_date_str}) est déjà passée.",
-            }
-            st.warning(peak_warn.get(lang, peak_warn["en"]))
-        else:
-            st.info(f"{T['peak_info']} **{peak_date_str}** → **${forecast_summary['peak_expected_sales']:,.0f}**")
-
-        # Leading Indicators
-        indicators = forecast_summary.get('leading_indicators', [])
-        if indicators:
-            st.divider()
-            li_title = {
-                "en": "📡 Leading Indicators — Validate the Forecast",
-                "ar": "📡 مؤشرات قيادية — للتحقق من التوقعات",
-                "fr": "📡 Indicateurs Avancés — Valider la Prévision",
-            }
-            st.subheader(li_title.get(lang, li_title["en"]))
-            li_caption = {
-                "en": "Monitor these signals to confirm or revise the forecast before committing resources.",
-                "ar": "راقب هذه الإشارات قبل تخصيص الموارد.",
-                "fr": "Surveillez ces signaux avant d'engager des ressources.",
-            }
-            st.caption(li_caption.get(lang, li_caption["en"]))
-            for ind in indicators:
-                with st.expander(f"📌 {ind['signal']} — Target: {ind['target']}"):
-                    st.markdown(f"**Metric:** {ind['metric']}")
-                    st.markdown(f"**Alert:** {ind['alert']}")
-                    st.markdown(f"**Action if triggered:** {ind['action']}")
-
-    # ── Tab 5: Performance Overview ───────────────────────
-    with tab4:
-        perf_titles = {
-            "en": "💬 Performance Overview",
-            "ar": "💬 نظرة الأداء",
-            "fr": "💬 Aperçu Performance",
-        }
-        st.subheader(perf_titles.get(lang,"💬 Performance Overview"))
-        captions = {
-            "en": "Ask anything about your sales data — get instant insights",
-            "ar": "اسأل أي شيء عن بيانات مبيعاتك — احصل على رؤى فورية",
-            "fr": "Posez n'importe quelle question sur vos données de ventes",
-        }
-        st.caption(captions.get(lang, captions["en"]))
-
-        for message in st.session_state.chat_history:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-        if len(st.session_state.chat_history) == 0:
-            init_labels = {
-                "en": "🔍 Generating performance overview...",
-                "ar": "🔍 جاري توليد نظرة الأداء...",
-                "fr": "🔍 Génération de l'aperçu...",
-            }
-            with st.spinner(init_labels.get(lang, init_labels["en"])):
-                from src.agent import ask_agent
-                answer, history = ask_agent(T["auto_question"], st.session_state.system_prompt, [])
-                st.session_state.chat_history = history
-                st.rerun()
-
-        placeholders = {
-            "en": "Ask about your sales data...",
-            "ar": "اسأل عن بيانات مبيعاتك...",
-            "fr": "Posez une question sur vos données...",
-        }
-        if question := st.chat_input(placeholders.get(lang, placeholders["en"])):
-            from src.agent import stream_agent
-            with st.chat_message("user"):
-                st.markdown(question)
-            with st.chat_message("assistant"):
-                response_placeholder = st.empty()
-                full_response = ""
-                for chunk in stream_agent(question, st.session_state.system_prompt, st.session_state.chat_history):
-                    full_response += chunk
-                    response_placeholder.markdown(full_response + "▌")
-                response_placeholder.markdown(full_response)
-            st.session_state.chat_history.append({"role": "user",      "content": question})
-            st.session_state.chat_history.append({"role": "assistant", "content": full_response})
-
-# ─── Landing Page ─────────────────────────────────────────
-else:
-    T = get_translations(lang)
-    col1,col2,col3 = st.columns(3)
-    with col1: st.info(T["step1"])
-    with col2: st.info(T["step2"])
-    with col3: st.info(T["step3"])
     st.divider()
-    st.subheader(T["what_it_does"])
-    col1,col2 = st.columns(2)
-    with col1: st.markdown(T["feature1"])
-    with col2: st.markdown(T["feature2"])
+
+    # ── Bear / Base / Bull ───────────────────────
+    st.markdown("#### 📊 Scenario Planning")
+    b1, b2, b3 = st.columns(3)
+    bear = fc.get('bear_12_weeks', 0)
+    base = fc.get('next_12_weeks', 0)
+    bull = fc.get('bull_12_weeks', 0)
+
+    with b1:
+        st.markdown(
+            f'<div class="kpi-card" style="border-left:3px solid #EF4444">'
+            f'<p class="kpi-value" style="color:#EF4444">🐻 {money(bear)}</p>'
+            f'<p class="kpi-label">Bear Case</p>'
+            f'<p style="color:#8B92A5;font-size:11px">{fc.get("bear_spread_pct",0):+.1f}% from base</p>'
+            f'</div>', unsafe_allow_html=True)
+    with b2:
+        st.markdown(
+            f'<div class="kpi-card" style="border-left:3px solid #7C9EFF">'
+            f'<p class="kpi-value" style="color:#7C9EFF">📌 {money(base)}</p>'
+            f'<p class="kpi-label">Base Case</p>'
+            f'<p style="color:#8B92A5;font-size:11px">Trend continuation</p>'
+            f'</div>', unsafe_allow_html=True)
+    with b3:
+        st.markdown(
+            f'<div class="kpi-card" style="border-left:3px solid #4ADE80">'
+            f'<p class="kpi-value" style="color:#4ADE80">🚀 {money(bull)}</p>'
+            f'<p class="kpi-label">Bull Case</p>'
+            f'<p style="color:#8B92A5;font-size:11px">+{fc.get("bull_spread_pct",0):.1f}% from base</p>'
+            f'</div>', unsafe_allow_html=True)
+
+    st.divider()
+
+    # ── رسم التوقعات ─────────────────────────────
+    if ctx.forecast_df is not None and ctx.prophet_data is not None:
+        st.markdown("#### 📈 Forecast Chart")
+        forecast_df  = ctx.forecast_df
+        historical   = ctx.prophet_data
+        last_hist_dt = historical['ds'].max()
+        future       = forecast_df[forecast_df['ds'] > last_hist_dt]
+
+        fig, ax = plt.subplots(figsize=(12, 5))
+        fig.patch.set_facecolor('#0F1117')
+        ax.set_facecolor('#141824')
+
+        ax.plot(historical['ds'], historical['y'],
+                color='#7C9EFF', linewidth=1.5, alpha=0.8, label=T("historical"))
+
+        if len(future) > 0:
+            ax.fill_between(future['ds'], future['yhat_lower'], future['yhat_upper'],
+                            alpha=0.15, color='#4ADE80')
+            ax.plot(future['ds'], future['yhat'],
+                    color='#4ADE80', linewidth=2.5, linestyle='--', label=T("forecast_label"))
+            ax.plot(future['ds'], future['yhat_lower'],
+                    color='#EF4444', linewidth=1, linestyle=':', alpha=0.7, label='Bear')
+            ax.plot(future['ds'], future['yhat_upper'],
+                    color='#FBBF24', linewidth=1, linestyle=':', alpha=0.7, label='Bull')
+
+        ax.axvline(x=last_hist_dt, color='#8B92A5', linewidth=0.8, linestyle='--', alpha=0.5)
+        ax.yaxis.set_major_formatter(
+            mticker.FuncFormatter(lambda x, _: f"${x/1e6:.1f}M" if x >= 1e6 else f"${x:,.0f}")
+        )
+        ax.tick_params(colors='#8B92A5')
+        ax.spines['bottom'].set_color('#2D3250')
+        ax.spines['left'].set_color('#2D3250')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.grid(True, alpha=0.08, color='#2D3250')
+        ax.legend(fontsize=9, facecolor='#1A1F2E', labelcolor='#E2E8F0', framealpha=0.9)
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+    # ── Peak ─────────────────────────────────────
+    peak_wk  = fc.get('peak_week', 'N/A')
+    peak_val = fc.get('peak_expected_sales', 0)
+    if peak_wk != 'N/A':
+        st.info(f"{T('peak_info')} **{peak_wk}** → **{money(peak_val)}**")
+
+    # ── Sanity Warning ───────────────────────────
+    sanity = fc.get('sanity_check', {})
+    if not sanity.get('passed', True):
+        for w in sanity.get('warnings', []):
+            st.warning(w)
+
+    # ── Leading Indicators ───────────────────────
+    indicators = fc.get('leading_indicators', [])
+    if indicators:
+        st.divider()
+        st.markdown("#### 🎯 Leading Indicators")
+        for ind in indicators:
+            with st.expander(f"📍 {ind.get('signal', '')}"):
+                st.markdown(f"**Target:** {ind.get('target', '')}")
+                st.markdown(f"**Alert:** {ind.get('alert', '')}")
+                st.markdown(f"**Action:** {ind.get('action', '')}")
+
+
+# ════════════════════════════════════════════════
+# RENDER: AI AGENT TAB (Chat)
+# ════════════════════════════════════════════════
+def render_chat_tab(ctx):
+    """تبويب المحادثة مع الـ AI"""
+    from orchestrator_agent import OrchestratorAgent
+
+    st.markdown(f"#### {T('agent_title')}")
+    st.caption(T("agent_caption"))
+
+    # ── عرض تاريخ المحادثة ───────────────────────
+    for msg in st.session_state.chat_history:
+        if msg["role"] == "user":
+            st.markdown(
+                f'<div class="chat-user">👤 {msg["content"]}</div>',
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(
+                f'<div class="chat-assistant">🤖 {msg["content"]}</div>',
+                unsafe_allow_html=True
+            )
+
+    # ── حقل الإدخال ──────────────────────────────
+    question = st.chat_input(T("chat_placeholder"))
+
+    if question and ctx is not None:
+        # عرض سؤال المستخدم فوراً
+        st.markdown(
+            f'<div class="chat-user">👤 {question}</div>',
+            unsafe_allow_html=True
+        )
+
+        # Streaming response
+        with st.spinner(T("thinking")):
+            orch = OrchestratorAgent(lang=st.session_state.lang)
+
+            # جمع الـ streaming في نص كامل
+            full_response = ""
+            response_placeholder = st.empty()
+
+            for chunk in orch.chat(
+                question = question,
+                ctx      = ctx,
+                history  = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in st.session_state.chat_history
+                ],
+                stream   = True,
+            ):
+                full_response += chunk
+                response_placeholder.markdown(
+                    f'<div class="chat-assistant">🤖 {full_response}▌</div>',
+                    unsafe_allow_html=True
+                )
+
+            response_placeholder.markdown(
+                f'<div class="chat-assistant">🤖 {full_response}</div>',
+                unsafe_allow_html=True
+            )
+
+        # حفظ في التاريخ
+        st.session_state.chat_history.append({"role": "user",      "content": question})
+        st.session_state.chat_history.append({"role": "assistant", "content": full_response})
+
+    elif question and ctx is None:
+        st.warning("⚠️ يجب تحليل البيانات أولاً قبل استخدام المحادثة")
+
+    # ── مسح تاريخ المحادثة ───────────────────────
+    if st.session_state.chat_history:
+        if st.button("🗑️ Clear Chat", use_container_width=True):
+            st.session_state.chat_history = []
+            st.rerun()
+
+
+# ════════════════════════════════════════════════
+# RENDER: OVERVIEW TAB
+# ════════════════════════════════════════════════
+def render_overview_tab(ctx):
+    """التبويب الأول — نظرة عامة"""
+    summary = ctx.summary or {}
+
+    # ── KPI Cards ────────────────────────────────
+    render_kpi_cards(ctx)
+    st.divider()
+
+    col_left, col_right = st.columns([1.2, 1])
+
+    # ── ملخص البيانات ─────────────────────────────
+    with col_left:
+        st.markdown(f"#### {T('data_summary')}")
+        summary_rows = [
+            (T("total_records"),   f"{summary.get('total_records', 0):,}"),
+            ("Date Range",         summary.get('date_range', 'N/A')),
+            (T("total_sales"),     f"${summary.get('total_sales', 0):,.2f}"),
+            (T("avg_period"),      f"${summary.get('avg_weekly_sales', 0):,.2f}"),
+            ("Peak Period",        f"${summary.get('max_single_week', 0):,.2f}"),
+            ("Best Group",         str(summary.get('best_group', 'N/A'))),
+            ("Worst Group",        str(summary.get('worst_group', 'N/A'))),
+            ("Num Groups",         str(summary.get('num_groups', 'N/A'))),
+        ]
+        df_summary = pd.DataFrame(summary_rows, columns=["Metric", "Value"])
+        st.dataframe(df_summary, use_container_width=True, hide_index=True)
+
+    # ── جودة البيانات ────────────────────────────
+    with col_right:
+        st.markdown("#### 🧹 Data Quality")
+        dq = ctx.data_quality_report or {}
+        if dq:
+            completeness = dq.get('completeness', 0)
+            rating       = dq.get('rating', 'Unknown')
+            color        = {"Excellent": "#4ADE80", "Good": "#60A5FA",
+                            "Fair": "#FBBF24", "Poor": "#EF4444"}.get(rating, "#8B92A5")
+
+            st.markdown(
+                f'<div class="kpi-card">'
+                f'<p class="kpi-value" style="color:{color}">{completeness:.0f}/100</p>'
+                f'<p class="kpi-label">Data Quality — {rating}</p>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+            st.markdown("")
+            dq_rows = [
+                ("Total Records",  f"{dq.get('n_total', 0):,}"),
+                ("Missing Values", f"{dq.get('n_missing', 0)} ({dq.get('missing_pct', 0):.1f}%)"),
+                ("Duplicates",     f"{dq.get('n_duplicates', 0)}"),
+                ("Outliers (IQR)", f"{dq.get('n_outliers', 0)} ({dq.get('outlier_pct', 0):.1f}%)"),
+            ]
+            df_dq = pd.DataFrame(dq_rows, columns=["Check", "Result"])
+            st.dataframe(df_dq, use_container_width=True, hide_index=True)
+        else:
+            st.info("تقرير جودة البيانات غير متاح")
+
+    st.divider()
+
+    # ── AI Analysis ──────────────────────────────
+    st.markdown(f"#### {T('ai_analysis')}")
+    if ctx.ai_analysis_text:
+        st.markdown(ctx.ai_analysis_text)
+    else:
+        st.info("لم يتم توليد تحليل ذكي — تحقق من Pipeline Status")
+
+    st.divider()
+
+    # ── تنزيل التقرير ────────────────────────────
+    st.markdown("#### 📄 Download Report")
+    col_pdf, col_txt = st.columns(2)
+
+    with col_pdf:
+        if ctx.pdf_bytes:
+            st.download_button(
+                label     = T("download_pdf_now"),
+                data      = ctx.pdf_bytes,
+                file_name = f"sales_report_{ctx.session_id}.pdf",
+                mime      = "application/pdf",
+                use_container_width=True,
+                type      = "primary",
+            )
+        else:
+            st.button(T("download_pdf"), disabled=True, use_container_width=True)
+
+    with col_txt:
+        if ctx.ai_analysis_text:
+            st.download_button(
+                label     = T("download_txt"),
+                data      = ctx.ai_analysis_text,
+                file_name = f"analysis_{ctx.session_id}.txt",
+                mime      = "text/plain",
+                use_container_width=True,
+            )
+
+
+# ════════════════════════════════════════════════
+# LANDING PAGE (قبل رفع الملف)
+# ════════════════════════════════════════════════
+def render_landing():
+    """صفحة البداية قبل رفع الملف"""
+    st.markdown("""
+    <div style="text-align:center; padding: 60px 20px 40px;">
+        <h1 style="font-size:48px; font-weight:800; color:#7C9EFF; margin-bottom:8px;">
+            📊 Sales Analysis Agent
+        </h1>
+        <p style="font-size:18px; color:#8B92A5; max-width:600px; margin:0 auto 40px;">
+            Upload any sales data → Get instant AI-powered analysis, forecasts & reports
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns(3)
+    steps = [
+        (c1, "01", "Upload Data",    "CSV or Excel file — any column structure", "#7C9EFF"),
+        (c2, "02", "Map Columns",    "Tell us which column is Date and which is Sales", "#4ADE80"),
+        (c3, "03", "Get Results",    "AI analysis, charts, forecast & PDF report", "#FBBF24"),
+    ]
+    for col, num, title, desc, color in steps:
+        with col:
+            st.markdown(
+                f'<div class="kpi-card">'
+                f'<p style="font-size:36px;font-weight:800;color:{color};margin:0">{num}</p>'
+                f'<p style="font-size:16px;font-weight:600;color:#E2E8F0;margin:8px 0 4px">{title}</p>'
+                f'<p style="font-size:13px;color:#8B92A5;margin:0">{desc}</p>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+    st.divider()
+    c4, c5 = st.columns(2)
+    with c4:
+        st.markdown("#### ✨ What this tool does")
+        st.markdown("""
+        - 📊 Smart data cleaning & validation
+        - 📈 Sales trend & pattern analysis
+        - 🏪 Group/store/branch comparison
+        - 🔗 External factor correlation
+        """)
+    with c5:
+        st.markdown("#### 🚀 Powered by")
+        st.markdown("""
+        - 🤖 Claude AI (Anti-Hallucination Protocol)
+        - 📊 Holt-Winters Forecasting
+        - 📄 Professional PDF Reports
+        - 💬 Interactive AI Chat
+        """)
+
+
+# ════════════════════════════════════════════════
+# MAIN APP
+# ════════════════════════════════════════════════
+def main():
+    # ── Header ───────────────────────────────────
+    st.markdown(
+        f'<h2 style="color:#7C9EFF;margin-bottom:0">{T("app_title")}</h2>'
+        f'<p style="color:#8B92A5;margin-top:4px;font-size:13px">{T("app_subtitle")}</p>',
+        unsafe_allow_html=True
+    )
+
+    # ── Sidebar ───────────────────────────────────
+    (uploaded, company_name, date_col, sales_col,
+     forecast_weeks, analysis_type, analyze_clicked) = render_sidebar()
+
+    # ── Pipeline Trigger ──────────────────────────
+    if analyze_clicked and uploaded:
+        # reset chat عند تحليل جديد
+        st.session_state.chat_history = []
+        st.session_state.ctx = None
+
+        ctx = run_pipeline(
+            uploaded, company_name, date_col, sales_col,
+            forecast_weeks, analysis_type,
+        )
+        if ctx:
+            st.session_state.ctx      = ctx
+            st.session_state.analyzed = True
+            st.session_state.last_file = uploaded.name
+            st.rerun()
+
+    # ── Main Content ──────────────────────────────
+    ctx = st.session_state.ctx
+
+    if ctx is None:
+        # لم يتم التحليل بعد
+        render_landing()
+        return
+
+    # ── Pipeline Status (دائماً مرئي) ────────────
+    render_pipeline_status(ctx)
+
+    # ── Tabs ──────────────────────────────────────
+    tab1, tab2, tab3, tab4 = st.tabs([
+        T("tab_overview"),
+        T("tab_charts"),
+        T("tab_forecast"),
+        T("tab_agent"),
+    ])
+
+    with tab1:
+        render_overview_tab(ctx)
+
+    with tab2:
+        st.markdown(f"#### 📈 {T('tab_charts')}")
+        render_charts(ctx)
+
+    with tab3:
+        render_forecast_tab(ctx)
+
+    with tab4:
+        render_chat_tab(ctx)
+
+
+# ── Entry Point ──────────────────────────────────
+if __name__ == "__main__":
+    main()
+    
