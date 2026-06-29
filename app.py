@@ -10,9 +10,16 @@ app.py — واجهة Streamlit للـ Sales Analysis Multi-Agent System
 لا يحتوي على أي منطق تحليل أو حسابات.
 """
 
+import sys
+import os
+
+# تأكد من أن src/ متاح على مسار الاستيراد
+_src = os.path.join(os.path.dirname(__file__), 'src')
+if _src not in sys.path:
+    sys.path.insert(0, _src)
+
 import streamlit as st
 import pandas as pd
-import os
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
