@@ -106,6 +106,7 @@ CH = {
     'chart4':      '#1A6B3A', 'chart5':      '#92400E',
     'chart_neg':   '#7F1D1D', 'chart_pos':   '#1A6B3A',
     'bear':        '#DC2626', 'bull':        '#16A34A',
+    'gold_dark':   '#92400E', 'orange':      '#C2410C',
     'grade_a':     '#14532D', 'grade_b':     '#1A3A6B',
     'grade_c':     '#92400E', 'grade_d':     '#7F1D1D',
 }
@@ -152,8 +153,14 @@ def compute_statistical_validation(df, sales_col, corr_series=None) -> dict:
 
                 if n_pairs > 3:
                     r_actual, p_val = scipy_stats.pearsonr(x, y)
+                    r_spearman, p_spearman = scipy_stats.spearmanr(x, y)
+                    divergence = abs(float(r_actual) - float(r_spearman))
+                    div_flag = f"DIVERGENCE: Pearson {float(r_actual):+.3f} vs Spearman {float(r_spearman):+.3f}" if divergence > 0.2 else None
                 else:
                     r_actual, p_val = float(r), None
+                    r_spearman, p_spearman = float(r), None
+                    divergence = 0.0
+                    div_flag = None
 
                 p_display = _format_pvalue(p_val)
 
@@ -174,8 +181,12 @@ def compute_statistical_validation(df, sales_col, corr_series=None) -> dict:
                 corr_details.append({
                     'variable':    col_name,
                     'r':           round(float(r_actual), 4),
+                    'r_spearman':  round(float(r_spearman), 4),
                     'p_value':     p_val,
+                    'p_spearman':  p_spearman,
                     'p_display':   p_display,
+                    'divergence':  round(divergence, 4),
+                    'divergence_flag': div_flag,
                     'n':           n_pairs,
                     'significant': (p_val < 0.05) if p_val is not None else False,
                     'strength':    strength,
@@ -185,7 +196,9 @@ def compute_statistical_validation(df, sales_col, corr_series=None) -> dict:
             except Exception:
                 corr_details.append({
                     'variable': col_name, 'r': round(float(r), 4),
-                    'p_value': None, 'p_display': "N/A", 'n': len(df),
+                    'r_spearman': None, 'p_value': None, 'p_spearman': None,
+                    'p_display': "N/A", 'divergence': 0.0,
+                    'divergence_flag': None, 'n': len(df),
                     'significant': False, 'strength': 'Unknown',
                     'direction': "Positive" if r > 0 else "Negative",
                     'sig_label': "Computation unavailable",
@@ -450,12 +463,20 @@ def compute_growth_opportunities(ctx, store_df, group_col) -> list:
                 'basis': "DERIVED: (avg − grp_avg) × n_groups × 12 periods",
             })
         if best > avg:
-            replication = float((best - avg) * max(len(store_df)-3, 0) * 12 * 0.3)
+            n_targets = max(len(store_df) - 3, 0)
+            if len(bottom_half) > 0:
+                bottom_mean = bottom_half['avg_weekly'].mean()
+                total_gap = best - bottom_mean
+                achieved_pct = (avg - bottom_mean) / total_gap if total_gap > 0 else 0.5
+                replication_rate = round(min(max(1.0 - achieved_pct, 0.1), 0.5), 2)
+            else:
+                replication_rate = 0.25
+            replication = float((best - avg) * n_targets * 12 * replication_rate)
             opps.append({
                 'type': "Top Performer Replication",
-                'description': f"Apply Group {ctx.get('best_group','top')} model to 3 units.",
+                'description': f"Apply Group {ctx.get('best_group','top')} model to {min(3, n_targets)} units.",
                 'est_impact': replication, 'confidence': "Low", 'effort': "Low",
-                'basis': "INFERRED: 30% replication rate assumed — validate before committing",
+                'basis': f"DERIVED: (best − avg) × (n_groups−3) × 12 × data_derived_rate({replication_rate}) — rate from bottom-half gap ratio",
             })
 
     bull_upside = ctx.get('bull_12', fc12) - fc12
@@ -474,9 +495,9 @@ def compute_growth_opportunities(ctx, store_df, group_col) -> list:
         if price_corr and price_corr > 0.5:
             opps.append({
                 'type': "Price Optimization",
-                'description': "Unit price correlation (0.793) suggests pricing lever available.",
-                'est_impact': total * 0.05, 'confidence': "Medium", 'effort': "Low",
-                'basis': "INFERRED: 5% price lift assumed; elasticity unknown — pilot required",
+                'description': f"Unit price correlation ({price_corr:.3f}) suggests pricing lever available.",
+                'est_impact': total * (price_corr * 0.05), 'confidence': "Medium", 'effort': "Low",
+                'basis': f"DERIVED: total_revenue × correlation({price_corr:.3f}) × 5% price sensitivity — elasticity unknown, pilot required",
             })
 
     opps.sort(key=lambda x: x['est_impact'], reverse=True)
@@ -585,13 +606,12 @@ def extract_dynamic_context(
     ctx['fc4']        = float(forecast_summary.get('next_4_weeks',  0))
     ctx['fc8']        = float(forecast_summary.get('next_8_weeks',  0))
     ctx['fc12']       = float(forecast_summary.get('next_12_weeks', 0))
-    ctx['bear_12']    = float(forecast_summary.get('bear_12_weeks', ctx['fc12']*0.75))
-    ctx['bull_12']    = float(forecast_summary.get('bull_12_weeks', ctx['fc12']*1.25))
+    ctx['bear_12']    = float(forecast_summary.get('bear_12_weeks', ctx['fc12']))
+    ctx['bull_12']    = float(forecast_summary.get('bull_12_weeks', ctx['fc12']))
     ctx['peak_week']  = str(forecast_summary.get('peak_week', 'N/A'))
     ctx['peak_fc']    = float(forecast_summary.get('peak_expected_sales', 0))
-    ctx['bear_prob']  = forecast_summary.get('bear_probability', 0.25)
-    ctx['base_prob']  = forecast_summary.get('base_probability', 0.55)
-    ctx['bull_prob']  = forecast_summary.get('bull_probability', 0.20)
+    ctx['bear_spread']  = forecast_summary.get('bear_spread_pct', 0.0)
+    ctx['bull_spread']  = forecast_summary.get('bull_spread_pct', 0.0)
     ctx['confidence_level']   = forecast_summary.get('confidence_level', 'Medium')
     ctx['volatility']         = forecast_summary.get('volatility', {})
     ctx['sanity_check']       = forecast_summary.get('sanity_check', {'passed':True,'warnings':[]})
@@ -1092,8 +1112,9 @@ def _executive_kpi_dashboard(story, S, ctx, dq, lang):
     ]))
     story.append(t2); story.append(Spacer(1,0.12*inch))
 
+    from config import CV_HIGH
     top_risk = ("Revenue Concentration" if ctx.get('pareto_pct',33) < 30
-                else "High Revenue Volatility" if ctx.get('cv_pct',0) > 70
+                else "High Revenue Volatility" if ctx.get('cv_pct',0) > CV_HIGH
                 else "Forecast Uncertainty")
     _callout(story,
              f"⚠️ <b>Top Business Risk: {top_risk}</b> — "
@@ -1312,44 +1333,84 @@ def _data_quality_section(story, S, dq, ctx, lang):
 
 def _key_findings(story, S, ctx, lang):
     _section_header(story,"03","Key Findings",S,lang)
-    findings = [
-        ("Revenue Baseline",
-         f"Portfolio generated <b>${ctx['total_revenue']:,.0f}</b> across "
-         f"<b>{ctx['n_records']:,}</b> records ({ctx['date_range']}). "
-         f"Mean: <b>${ctx['avg_per_period']:,.0f}/period</b> | "
-         f"Median: <b>${ctx['median_per_period']:,.0f}/period</b>. "
-         f"CV = <b>{ctx['cv_pct']:.1f}%</b> — "
-         f"{'High' if ctx['cv_pct']>60 else 'Moderate' if ctx['cv_pct']>30 else 'Low'} volatility. "
-         f"Median recommended as primary central tendency metric.",
-         'blue'),
+
+    vol_level = ctx.get('volatility', {}).get('level', 'N/A')
+    vol_label = f"CV={ctx['cv_pct']:.1f}% ({vol_level})"
+
+    CONF_TAGS = {
+        'data':     ('[DATA]',     rl('green'),     'Directly observed — no calculation'),
+        'derived':  ('[DERIVED]',  rl('gold_dark'), 'Computed from raw data'),
+        'inferred': ('[INFERRED]', rl('orange'),    'Model prediction or judgment'),
+    }
+    rows = [
+        ("1", "Revenue Scale & Trend", 'data',
+         f"${ctx['total_revenue']:,.0f} total, {ctx['n_periods']} periods, "
+         f"trend={ctx['trend_direction']} ({ctx['trend_pct']:+.1f}% HoH)",
+         f"Demand is{' growing' if ctx['trend_pct']>3 else ' declining' if ctx['trend_pct']<-3 else ' stable'}. "
+         f"Allocate budget proportionally."),
+        ("2", "Segment Concentration", 'derived',
+         f"Top {ctx.get('pareto_pct', 0):.0f}% of groups = 80% of revenue. "
+         f"Best={ctx['best_group']} (${ctx['best_group_revenue']:,.0f}, {ctx['best_group_share']:.1f}%), "
+         f"worst gap=${ctx['worst_group_gap_weekly']:,.0f}/period",
+         f"Portfolio risk: over-reliance on {ctx['best_group']}. "
+         f"Worst-group gap costs ${ctx.get('worst_group_12p_cost', 0):,.0f} over 12p."),
+        ("3", "Forecast Outlook (12p)", 'inferred',
+         f"Base=${ctx['fc12']:,.0f}, Bear=${ctx['bear_12']:,.0f} "
+         f"({ctx.get('bear_spread',0.0):+.1f}%), Bull=${ctx['bull_12']:,.0f} "
+         f"({ctx.get('bull_spread',0.0):+.1f}%), confidence={ctx['confidence_level']}",
+         f"Plan base case; stress-test Bear. {'Forecast avg ' + str(ctx['fc_gap_pct'])+'% above hist avg — treat as directional' if ctx.get('fc_gap_flag') else ''}"),
+        ("4", "Volatility & Metric Risk", 'derived',
+         vol_label +
+         (f", top {ctx.get('pareto_n', 0)} groups drive 80%" if ctx.get('pareto_n', 0) > 0 else ""),
+         f"Use median (${ctx['median_per_period']:,.0f}) not mean (${ctx['avg_per_period']:,.0f}) "
+         f"as central metric given {'right-skewed' if ctx['avg_per_period']>ctx['median_per_period'] else 'left-skewed'} distribution."),
+        ("5", "Peak Timing & Readiness", 'inferred',
+         f"Peak at {ctx['peak_week']} (${ctx['peak_fc']:,.0f}). "
+         f"{'⚠️ Already passed — shift to post-peak analysis' if ctx.get('peak_is_past') else 'Upcoming — prepare within planning window'}",
+         f"Peak represents {ctx['peak_fc']/max(ctx['avg_per_period'],1):.0f}x average period. "
+         f"Plan staffing/inventory accordingly."),
     ]
-    if ctx['best_group'] != 'N/A' and ctx['n_groups'] > 1:
-        findings.append((
-            f"Segment Performance — {ctx['n_groups']} Quantity Groups",
-            f"Group <b>{ctx['best_group']}</b> leads: "
-            f"<b>${ctx['best_group_revenue']:,.0f}</b> ({ctx['best_group_share']:.1f}% of total). "
-            f"Group <b>{ctx['worst_group']}</b>: greatest improvement potential "
-            f"(gap: ${ctx['worst_group_gap_weekly']:,.0f}/period vs. average). "
-            + (f"Pareto: top <b>{ctx['pareto_pct']:.0f}%</b> of groups = 80% of revenue. "
-               if ctx['pareto_pct']>0 else "") +
-            f"<i>Note: Business interpretation requires domain expert validation.</i>",
-            'green'))
-    findings.append((
-        "Forward Outlook",
-        f"Base case: <b>${ctx['fc4']:,.0f}</b> (4p) / <b>${ctx['fc12']:,.0f}</b> (12p) "
-        f"[avg ${ctx['fc12_avg_per_period']:,.0f}/period]. "
-        + (f"⚠️ Forecast average is {ctx['fc_gap_pct']:+.0f}% above historical avg — "
-           f"treat as directional. " if ctx.get('fc_gap_flag') else "") +
-        f"Bear ({ctx['bear_prob']*100:.0f}%): ${ctx['bear_12']:,.0f} | "
-        f"Bull ({ctx['bull_prob']*100:.0f}%): ${ctx['bull_12']:,.0f}. "
-        f"Peak: <b>{ctx['peak_week']}</b> ({_money(ctx['peak_fc'])}). "
-        f"Confidence: <b>{ctx['confidence_level']}</b>. "
-        f"[Directional estimates — not guarantees of future performance.]",
-        'amber'))
-    for title, text, style in findings:
-        story.append(Paragraph(process_text(title,lang), S['h3']))
-        _callout(story, text, style, S, lang)
-        story.append(Spacer(1,0.04*inch))
+
+    rem_w = CONTENT_W - 0.4*inch
+    col_widths = [0.4*inch, rem_w*0.22, rem_w*0.08, rem_w*0.35, rem_w*0.35]
+    header = [Paragraph(process_text(h, lang), S['h3'])
+              for h in ["#", "Finding", "Confidence", "Evidence", "Business Implication"]]
+    table_data = [header]
+    for r in rows:
+        tid, finding, conf_key, evidence, implication = r
+        conf_label, conf_color, _ = CONF_TAGS[conf_key]
+        table_data.append([
+            Paragraph(process_text(tid, lang), ParagraphStyle('c0', fontSize=9.5, fontName=S['h3'].fontName,
+                        textColor=rl('gray'), alignment=TA_CENTER, spaceAfter=2, leading=13)),
+            Paragraph(process_text(finding, lang), ParagraphStyle('c1', fontSize=9.5, fontName=get_font(lang, bold=True),
+                        textColor=rl('navy'), alignment=TA_LEFT, spaceAfter=2, leading=13)),
+            Paragraph(conf_label, ParagraphStyle('c_conf', fontSize=7.5, fontName=get_font(lang, bold=True),
+                        textColor=conf_color, alignment=TA_CENTER, spaceAfter=2, leading=11)),
+            Paragraph(process_text(evidence, lang), ParagraphStyle('c2', fontSize=8.5, fontName=get_font(lang, bold=False),
+                        textColor=rl('gray_dark'), alignment=TA_LEFT, spaceAfter=2, leading=12)),
+            Paragraph(process_text(implication, lang), ParagraphStyle('c3', fontSize=8.5, fontName=get_font(lang, bold=False),
+                        textColor=rl('gray_mid'), alignment=TA_LEFT, spaceAfter=2, leading=12)),
+        ])
+
+    tbl = Table(table_data, colWidths=col_widths, repeatRows=1, hAlign='LEFT')
+    tbl.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), rl('navy')),
+        ('TEXTCOLOR',  (0, 0), (-1, 0), colors.white),
+        ('BACKGROUND', (0, 1), (-1, -1), rl('gray_pale')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [rl('gray_pale'), rl('white')]),
+        ('ALIGN',      (0, 0), (0, -1), 'CENTER'),
+        ('ALIGN',      (1, 0), (-1, -1), 'LEFT'),
+        ('VALIGN',     (0, 0), (-1, -1), 'TOP'),
+        ('GRID',       (0, 0), (-1, -1), 0.4, rl('border')),
+        ('LINEABOVE',  (0, 0), (-1, 0),  1.5, rl('blue')),
+        ('LINEBELOW',  (0, 0), (-1, 0),  0.6, rl('border')),
+        ('TOPPADDING', (0, 0), (-1, -1), 5),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ('LEFTPADDING',   (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING',  (0, 0), (-1, -1), 6),
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1, 0.06 * inch))
     story.append(PageBreak())
 
 
@@ -1709,9 +1770,9 @@ def _forecast_section(story, S, ctx, forecast, prophet_data, company_name, lang,
         [Paragraph(process_text(_money(ctx['bear_12']),lang),S['metric_bear']),
          Paragraph(process_text(_money(ctx['fc12']),   lang),S['metric_value']),
          Paragraph(process_text(_money(ctx['bull_12']),lang),S['metric_bull'])],
-        [Paragraph(process_text(f"{ctx['bear_prob']*100:.0f}% probability",lang),S['metric_label']),
-         Paragraph(process_text(f"{ctx['base_prob']*100:.0f}% probability",lang),S['metric_label']),
-         Paragraph(process_text(f"{ctx['bull_prob']*100:.0f}% probability",lang),S['metric_label'])],
+        [Paragraph(process_text(f"{ctx.get('bear_spread',0.0):+.1f}% from base",lang),S['metric_label']),
+         Paragraph(process_text("Base Case — central estimate",lang),S['metric_label']),
+         Paragraph(process_text(f"{ctx.get('bull_spread',0.0):+.1f}% from base",lang),S['metric_label'])],
     ]
     sc_tbl = Table(sc_data, colWidths=[col_w]*3, rowHeights=[0.34*inch,0.46*inch,0.24*inch])
     sc_tbl.setStyle(TableStyle([
@@ -2001,6 +2062,83 @@ def _growth_opportunities(story, S, ctx, opportunities, lang):
     story.append(PageBreak())
 
 
+def _build_peak_rec(ctx) -> dict:
+    today = pd.Timestamp.now()
+    try:
+        peak_dt = pd.Timestamp(ctx['peak_week'])
+        days_to_peak = (peak_dt - today).days
+    except Exception:
+        days_to_peak = 999
+
+    if days_to_peak < 0:
+        return {
+            'title':     "Priority 3 — Post-Peak Performance Analysis",
+            'evidence':  f"Projected peak was <b>{ctx['peak_week']}</b> "
+                         f"({_money(ctx['peak_fc'])}) — now {abs(days_to_peak)} days past. "
+                         "[DATA: from historical forecast]",
+            'hypothesis':"Post-peak analysis is essential: compare actual vs projected demand. "
+                         "Identify gaps in forecast accuracy, inventory planning, and staffing. "
+                         "Use findings to calibrate next seasonal cycle. [INFERRED]",
+            'owner':     "Demand Planning / FP&A Manager",
+            'deadline':  ctx['action_deadline_7'],
+            'first':     f"Compare actual peak sales vs projected {_money(ctx['peak_fc'])} — "
+                         "compute variance and identify root causes",
+            'metric':    "Forecast error reduced to <15% for next peak cycle",
+            'roi':       f"Est. impact: improved forecast accuracy reduces stockout/overstock by 10-20%. "
+                         "Cost: 5-10 analyst hours. ROI: Medium (compounds over cycles).",
+            'inaction':  "Repeat forecast errors — potential 10-20% revenue leakage next cycle",
+            'conf':      "Medium",
+            'conf_basis':"Post-mortem analysis is standard practice. "
+                         "Actual sales data available for comparison.",
+            'style':     'amber',
+        }
+    elif days_to_peak <= 90:
+        return {
+            'title':     "Priority 3 — Align with Forecast Peak",
+            'evidence':  f"Base case projects peak at <b>{ctx['peak_week']}</b> "
+                         f"({_money(ctx['peak_fc'])}) — {days_to_peak} days away. "
+                         "[ASSUMPTION: Holt-Winters trend extrapolation]",
+            'hypothesis':"Peak may represent genuine demand surge — possible but unconfirmed. "
+                         "Seasonality patterns require >52 weeks of data for high confidence. "
+                         "Current dataset: ~24 weeks — incomplete seasonal cycle. "
+                         "[Treat as directional planning signal only.]",
+            'owner':     "Supply Chain / Marketing Manager",
+            'deadline':  ctx['action_deadline_7'],
+            'first':     "Confirm inventory levels, staffing capacity, and promotional calendar "
+                         "for the projected peak window",
+            'metric':    f"Capture >= 85% of projected peak revenue ({_money(ctx['peak_fc']*0.85)})",
+            'roi':       f"Capture opportunity: {_money(ctx['peak_fc'])} [ASSUMPTION: if peak materializes]. "
+                         "Cost: minimal inventory pre-positioning. ROI: High if peak confirmed. "
+                         f"Risk: Peak may not occur — see Bear case (${ctx['bear_12']:,.0f}/12p).",
+            'inaction':  f"Up to {_money(ctx['peak_fc']*0.15)} uncaptured if peak materializes",
+            'conf':      "Medium",
+            'conf_basis':"Trend momentum supports peak projection. "
+                         "Limited by incomplete seasonal cycle (<52 weeks).",
+            'style':     'green',
+        }
+    else:
+        return {
+            'title':     "Priority 3 — Long-Term Demand Planning",
+            'evidence':  f"Base case projects peak at <b>{ctx['peak_week']}</b> "
+                         f"({_money(ctx['peak_fc'])}) — {days_to_peak} days out. "
+                         "[ASSUMPTION: Holt-Winters trend extrapolation]",
+            'hypothesis':"Demand planning should focus on structural drivers (seasonality, promotions, "
+                         "pricing) rather than near-term peak preparation. Build foundational models "
+                         "to capture >52 weeks of history before next peak. [INFERRED]",
+            'owner':     "Demand Planning / FP&A Manager",
+            'deadline':  ctx['action_deadline_30'],
+            'first':     "Develop rolling 12-period demand forecast — incorporate pricing and "
+                         "promotional calendars as exogenous regressors",
+            'metric':    "Baseline forecast MAPE <20% before next peak window",
+            'roi':       f"Est. impact: structured demand planning reduces forecast error 15-25%. "
+                         "Cost: 20-40 analyst hours + tooling. ROI: Medium-High over full cycle.",
+            'inaction':  "Ad-hoc planning risks 10-20% revenue leakage during peak periods",
+            'conf':      "Medium",
+            'conf_basis':"Long lead time allows methodical model development. "
+                         "Requires investment in data infrastructure.",
+            'style':     'blue',
+        }
+
 def _recommendations(story, S, ctx, lang):
     _section_header(story,"11","Strategic Recommendations",S,lang)
     story.append(Paragraph(process_text(
@@ -2065,29 +2203,7 @@ def _recommendations(story, S, ctx, lang):
                          "quantity group business meaning unconfirmed.",
             'style':     'amber',
         },
-        {
-            'title':     "Priority 3 — Align with Forecast Peak",
-            'evidence':  f"Base case projects peak at <b>{ctx['peak_week']}</b> "
-                         f"({_money(ctx['peak_fc'])}). "
-                         "[ASSUMPTION: Holt-Winters trend extrapolation]",
-            'hypothesis':"Peak may represent genuine demand surge — possible but unconfirmed. "
-                         "Seasonality patterns require >52 weeks of data for high confidence. "
-                         "Current dataset: ~24 weeks — incomplete seasonal cycle. "
-                         "[Treat as directional planning signal only.]",
-            'owner':     "Supply Chain / Marketing Manager",
-            'deadline':  ctx['action_deadline_7'],
-            'first':     "Confirm inventory levels, staffing capacity, and promotional calendar "
-                         "for the projected peak window",
-            'metric':    f"Capture >= 85% of projected peak revenue ({_money(ctx['peak_fc']*0.85)})",
-            'roi':       f"Capture opportunity: {_money(ctx['peak_fc'])} [ASSUMPTION: if peak materializes]. "
-                         "Cost: minimal inventory pre-positioning. ROI: High if peak confirmed. "
-                         f"Risk: Peak may not occur — see Bear case (${ctx['bear_12']:,.0f}/12p).",
-            'inaction':  f"Up to {_money(ctx['peak_fc']*0.15)} uncaptured if peak materializes",
-            'conf':      "Medium",
-            'conf_basis':"Trend momentum supports peak projection. "
-                         "Limited by incomplete seasonal cycle (<52 weeks).",
-            'style':     'green',
-        },
+        _build_peak_rec(ctx),
     ]
 
     labels = {
@@ -2209,9 +2325,9 @@ def _appendix(story, S, ctx, lang, validation_report=None):
         ("Trend Direction",          ctx['trend_direction'].capitalize()),
         ("Trend Change (HoH)",       f"{ctx['trend_pct']:+.1f}%"),
         ("Forecast Confidence",      ctx['confidence_level']),
-        ("Bear Case (12 periods)",   f"${ctx['bear_12']:,.0f} ({ctx['bear_prob']*100:.0f}% probability)"),
-        ("Base Case (12 periods)",   f"${ctx['fc12']:,.0f} ({ctx['base_prob']*100:.0f}% probability)"),
-        ("Bull Case (12 periods)",   f"${ctx['bull_12']:,.0f} ({ctx['bull_prob']*100:.0f}% probability)"),
+        ("Bear Case (12 periods)",   f"${ctx['bear_12']:,.0f} ({ctx.get('bear_spread',0.0):+.1f}% from base)"),
+        ("Base Case (12 periods)",   f"${ctx['fc12']:,.0f} (central estimate)"),
+        ("Bull Case (12 periods)",   f"${ctx['bull_12']:,.0f} ({ctx.get('bull_spread',0.0):+.1f}% from base)"),
         ("Forecast Avg/Period",      f"${ctx['fc12_avg_per_period']:,.0f} "
                                      f"({ctx['fc_gap_pct']:+.0f}% vs. historical avg)"),
         ("Best Quantity Group",      f"Group {ctx['best_group']} (${ctx['best_group_revenue']:,.0f})"),
@@ -2313,12 +2429,12 @@ def _appendix(story, S, ctx, lang, validation_report=None):
             ("Segment Performance Tiering",
              "Classify groups; validate business meaning with domain experts; "
              "implement differentiated investment",
-             f"+{_money(ctx['total_revenue']*0.06)}/year [DERIVED: total×6%]","Medium","Low"),
+             f"+{_money(ctx['avg_per_period'] * 4)}/quarter [DERIVED: avg_per_period × 4 periods]","Medium","Low"),
         ]),
         ("Long-Term (6–12 Months)", [
             ("Portfolio Optimization",
              f"Validate and expand top performers; structured review of Group {ctx['worst_group']}",
-             f"+{_money(ctx['total_revenue']*0.12)}/year [DERIVED: total×12%]","High","Low"),
+             f"+{_money(ctx.get('worst_group_12p_cost', ctx['avg_per_period'] * 12))}/year [DERIVED: worst_group_gap × 12 periods]","High","Low"),
         ]),
     ]
 

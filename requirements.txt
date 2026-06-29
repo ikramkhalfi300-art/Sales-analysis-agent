@@ -1,10 +1,12 @@
-streamlit 
-pandas 
-matplotlib 
-anthropic 
+streamlit
+pandas
+matplotlib
+anthropic
 python-dotenv
 openpyxl
 statsmodels
 reportlab
 numpy
 plotly
+pytest
+scipy

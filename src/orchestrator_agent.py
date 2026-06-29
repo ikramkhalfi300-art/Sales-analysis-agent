@@ -15,6 +15,7 @@ Pipeline:
 """
 
 import os
+import time
 import uuid
 import traceback
 from dataclasses import dataclass, field
@@ -23,21 +24,58 @@ from datetime import datetime
 
 import streamlit as st
 from anthropic import Anthropic
+from log_utils import setup_logger
+from config import (
+    CV_LOW, CV_MODERATE, CV_HIGH,
+    ANTHROPIC_API_KEY, PRIMARY_MODEL, FALLBACK_MODEL,
+    MAX_TOKENS, MAX_RETRIES, RETRY_BASE_DELAY,
+)
+from cache_utils import cache_get, cache_set, make_cache_key
 
+log = setup_logger('orchestrator')
 
 # ════════════════════════════════════════════════
 # 1. CLIENT SETUP
 # ════════════════════════════════════════════════
 def _get_client() -> Anthropic:
-    api_key = None
-    try:
-        api_key = st.secrets.get("ANTHROPIC_API_KEY")
-    except Exception:
-        pass
-    api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError("❌ ANTHROPIC_API_KEY غير موجود في secrets أو environment variables")
-    return Anthropic(api_key=api_key)
+    key = ANTHROPIC_API_KEY or os.getenv("ANTHROPIC_API_KEY")
+    if not key:
+        raise ValueError(
+            "ANTHROPIC_API_KEY not found. Set it in .env, environment variable, or Streamlit secrets."
+        )
+    return Anthropic(api_key=key)
+
+def _call_llm(client: Anthropic, system: str, messages: list,
+              model: str = None) -> str:
+    """Call LLM with retry + fallback. Returns response text or raises."""
+    model = model or PRIMARY_MODEL
+    last_err = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = client.messages.create(
+                model=model, max_tokens=MAX_TOKENS,
+                system=system, messages=messages,
+            )
+            return resp.content[0].text
+        except Exception as e:
+            last_err = e
+            err_str = str(e).lower()
+            if attempt < MAX_RETRIES:
+                delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                log.warn(f"LLM call failed (attempt {attempt}/{MAX_RETRIES}): {e}. Retrying in {delay:.0f}s...")
+                time.sleep(delay)
+    # All retries exhausted — try fallback model
+    if model != FALLBACK_MODEL:
+        log.warn(f"All {MAX_RETRIES} retries with '{model}' failed. Falling back to '{FALLBACK_MODEL}'...")
+        try:
+            resp = client.messages.create(
+                model=FALLBACK_MODEL, max_tokens=MAX_TOKENS,
+                system=system, messages=messages,
+            )
+            return resp.content[0].text
+        except Exception as e2:
+            last_err = e2
+    raise RuntimeError(f"LLM call failed after {MAX_RETRIES} retries and fallback: {last_err}")
 
 
 # ════════════════════════════════════════════════
@@ -155,7 +193,6 @@ class BaseAgent:
         الطريقة الرئيسية — يستدعيها الـ Orchestrator فقط.
         لا تستدع agent من agent آخر مباشرة.
         """
-        import time
         start = time.time()
         status = AgentStatus(name=self.name, success=False)
         try:
@@ -202,6 +239,7 @@ class DataAgent(BaseAgent):
         self.dataframe = dataframe
 
     def _execute(self, ctx: SharedContext) -> SharedContext:
+        log.info("DataAgent: loading data...")
         from data_agent import load_data, get_summary
 
         # ── تحميل وتنظيف ────────────────────────
@@ -264,7 +302,7 @@ class AnalysisAgent(BaseAgent):
     name = "AnalysisAgent"
 
     def _execute(self, ctx: SharedContext) -> SharedContext:
-        # ── التحقق من المدخلات ───────────────────
+        log.info("AnalysisAgent: computing statistics...")
         if ctx.df is None:
             raise ValueError("AnalysisAgent: البيانات غير موجودة — DataAgent لم يعمل بنجاح")
 
@@ -352,10 +390,21 @@ class ForecastAgent(BaseAgent):
     name = "ForecastAgent"
 
     def _execute(self, ctx: SharedContext) -> SharedContext:
+        log.info("ForecastAgent: training model and forecasting...")
         if ctx.df is None:
             raise ValueError("ForecastAgent: البيانات غير موجودة")
 
         from forecaster_agent import train_and_forecast, get_forecast_summary
+
+        # ── Cache check ────────────────────────────
+        import hashlib, json
+        df_hash = hashlib.md5(json.dumps(ctx.df.head(1000).to_dict('list'), default=str).encode()).hexdigest()[:16]
+        cache_key = make_cache_key("forecast", ctx.date_col, ctx.sales_col, ctx.forecast_weeks, df_hash)
+        cached = cache_get(cache_key)
+        if cached is not None:
+            log.info("ForecastAgent: using cached forecast")
+            ctx.forecast_df, ctx.prophet_data, ctx.forecast_summary = cached
+            return ctx
 
         # ── تدريب النموذج والتوقع ────────────────
         forecast_df, historical = train_and_forecast(
@@ -385,6 +434,8 @@ class ForecastAgent(BaseAgent):
             group_col_avg = group_col_avg,
         )
 
+        cache_set(cache_key, (ctx.forecast_df, ctx.prophet_data, ctx.forecast_summary))
+
         # ── تحذيرات التوقع ───────────────────────
         sanity = ctx.forecast_summary.get('sanity_check', {})
         if not sanity.get('passed', True):
@@ -413,6 +464,7 @@ class VisualAgent(BaseAgent):
     name = "VisualAgent"
 
     def _execute(self, ctx: SharedContext) -> SharedContext:
+        log.info("VisualAgent: generating charts...")
         if ctx.df is None:
             raise ValueError("VisualAgent: البيانات غير موجودة")
 
@@ -428,15 +480,7 @@ class VisualAgent(BaseAgent):
 
         # ── 1. منحنى المبيعات ────────────────────
         try:
-            # visualizer_agent يحفظ في outputs/ مباشرة
-            # نمرر البيانات الصحيحة بناءً على الأعمدة المتاحة
-            df_viz = ctx.df.copy()
-            # توحيد أسماء الأعمدة للـ visualizer
-            df_viz = df_viz.rename(columns={
-                ctx.date_col:  'Date',
-                ctx.sales_col: 'Weekly_Sales'
-            })
-            plot_sales_trend(df_viz)
+            plot_sales_trend(ctx.df, date_col=ctx.date_col, sales_col=ctx.sales_col)
             if os.path.exists('outputs/01_sales_trend.png'):
                 charts.append('outputs/01_sales_trend.png')
         except Exception as e:
@@ -445,10 +489,8 @@ class VisualAgent(BaseAgent):
         # ── 2. مقارنة المجموعات ──────────────────
         if ctx.store_df is not None:
             try:
-                store_viz = ctx.store_df.copy()
-                if ctx.group_col and ctx.group_col != 'Store':
-                    store_viz = store_viz.rename(columns={ctx.group_col: 'Store'})
-                plot_store_comparison(store_viz)
+                group_col = ctx.group_col or 'Store'
+                plot_store_comparison(ctx.store_df, group_col=group_col)
                 if os.path.exists('outputs/02_store_comparison.png'):
                     charts.append('outputs/02_store_comparison.png')
             except Exception as e:
@@ -518,16 +560,27 @@ class AIAnalysisAgent(BaseAgent):
         self.client = _get_client()
 
     def _execute(self, ctx: SharedContext) -> SharedContext:
+        log.info("AIAnalystAgent: calling LLM for narrative analysis...")
         system_prompt = self._build_system_prompt(ctx)
         user_prompt   = self._build_user_prompt(ctx)
 
-        response = self.client.messages.create(
-            model      = "claude-sonnet-4-6",
-            max_tokens = 4096,
-            system     = system_prompt,
-            messages   = [{"role": "user", "content": user_prompt}]
-        )
-        ctx.ai_analysis_text = response.content[0].text
+        cache_key = make_cache_key("ai_analysis", system_prompt, user_prompt)
+        cached = cache_get(cache_key)
+        if cached is not None:
+            log.info("AIAnalystAgent: using cached result")
+            ctx.ai_analysis_text = cached
+            return ctx
+
+        try:
+            ctx.ai_analysis_text = _call_llm(
+                self.client, system_prompt,
+                [{"role": "user", "content": user_prompt}],
+            )
+            cache_set(cache_key, ctx.ai_analysis_text)
+        except Exception as e:
+            log.warn(f"AIAnalystAgent: LLM failed — {e}. Proceeding without narrative.")
+            ctx.ai_analysis_text = None
+            ctx.add_warning(f"AI narrative unavailable: {e}")
         return ctx
 
     def _build_system_prompt(self, ctx: SharedContext) -> str:
@@ -554,8 +607,8 @@ class AIAnalysisAgent(BaseAgent):
         fc_cv       = fc.get('cv_pct', 0)
         next_4      = fc.get('next_4_weeks',  0)
         next_12     = fc.get('next_12_weeks', 0)
-        bear_12     = fc.get('bear_12_weeks', next_12 * 0.75)
-        bull_12     = fc.get('bull_12_weeks', next_12 * 1.25)
+        bear_12     = fc.get('bear_12_weeks') or next_12
+        bull_12     = fc.get('bull_12_weeks') or next_12
         bear_spread = fc.get('bear_spread_pct', -25.0)
         bull_spread = fc.get('bull_spread_pct',  25.0)
         peak_wk     = fc.get('peak_week', 'N/A')
@@ -611,7 +664,7 @@ class AIAnalysisAgent(BaseAgent):
         if momentum is not None:
             kpi_lines.append(f"- Growth Momentum: {momentum:+.1f}%/period")
         if cv_kpi:
-            level = 'EXTREME' if cv_kpi > 70 else 'HIGH' if cv_kpi > 40 else 'MODERATE' if cv_kpi > 20 else 'LOW'
+            level = 'EXTREME' if cv_kpi > CV_HIGH else 'HIGH' if cv_kpi > CV_MODERATE else 'MODERATE' if cv_kpi > CV_LOW else 'LOW'
             kpi_lines.append(f"- Revenue Volatility (CV): {cv_kpi:.1f}% → {level}")
         if kpi.get('best_period'):
             kpi_lines.append(f"- Best Period: {kpi['best_period']} (${kpi.get('best_period_value',0):,.0f})")
@@ -743,6 +796,7 @@ class ReportAgent(BaseAgent):
         self.output_path = output_path
 
     def _execute(self, ctx: SharedContext) -> SharedContext:
+        log.info("ReportAgent: generating PDF report...")
         if ctx.df is None:
             raise ValueError("ReportAgent: لا يوجد بيانات لإنشاء التقرير")
 
@@ -810,13 +864,12 @@ class ChatAgent(BaseAgent):
         messages = self.history.copy()
         messages.append({"role": "user", "content": self.question})
 
-        response = self.client.messages.create(
-            model      = "claude-sonnet-4-6",
-            max_tokens = 4096,
-            system     = system,
-            messages   = messages,
-        )
-        answer = response.content[0].text
+        try:
+            answer = _call_llm(self.client, system, messages)
+        except RuntimeError as e:
+            log.warn(f"ChatAgent.ask() failed: {e}")
+            return f"⚠️ AI response unavailable: {e}", messages
+
         messages.append({"role": "assistant", "content": answer})
         return answer, messages
 
@@ -826,14 +879,24 @@ class ChatAgent(BaseAgent):
         messages = self.history.copy()
         messages.append({"role": "user", "content": self.question})
 
-        with self.client.messages.stream(
-            model      = "claude-sonnet-4-6",
-            max_tokens = 4096,
-            system     = system,
-            messages   = messages,
-        ) as stream_obj:
-            for text in stream_obj.text_stream:
-                yield text
+        model = PRIMARY_MODEL
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                with self.client.messages.stream(
+                    model=model, max_tokens=MAX_TOKENS,
+                    system=system, messages=messages,
+                ) as stream_obj:
+                    for text in stream_obj.text_stream:
+                        yield text
+                return
+            except Exception as e:
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                    log.warn(f"ChatAgent stream failed (attempt {attempt}): {e}. Retrying in {delay:.0f}s...")
+                    time.sleep(delay)
+                else:
+                    yield f"⚠️ Stream error after {MAX_RETRIES} retries: {e}"
+                    return
 
     def _build_chat_system(self, ctx: SharedContext) -> str:
         """
@@ -849,8 +912,8 @@ class ChatAgent(BaseAgent):
         fc      = ctx.forecast_summary or {}
 
         next_12 = fc.get('next_12_weeks', 0)
-        bear_12 = fc.get('bear_12_weeks', next_12 * 0.75)
-        bull_12 = fc.get('bull_12_weeks', next_12 * 1.25)
+        bear_12 = fc.get('bear_12_weeks') or next_12
+        bull_12 = fc.get('bull_12_weeks') or next_12
         fc_conf = fc.get('confidence_level', 'Medium')
 
         group_summary = ""
@@ -1083,6 +1146,7 @@ def run_pipeline_with_progress(
     ─────────────────────────
     """
     status_text = st.empty() if streamlit_progress else None
+    log.info(f"Pipeline started (path={path}, dataframe={'yes' if dataframe is not None else 'no'})")
 
     def progress_callback(step: int, total: int, message: str):
         if streamlit_progress:

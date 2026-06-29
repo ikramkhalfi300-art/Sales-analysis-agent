@@ -1,14 +1,14 @@
-from src.data_loader import load_data, get_summary
-from src.analyzer import (
+from src.data_agent import load_data, get_summary
+from src.analyzer_agent import (
     sales_by_store, monthly_sales,
     holiday_vs_normal, correlation_analysis
 )
-from src.visualizer import (
+from src.visualizer_agent import (
     plot_sales_trend, plot_store_comparison, plot_monthly_trend,
     plot_holiday_impact, plot_correlations, plot_forecast
 )
-from src.forecaster import train_and_forecast, get_forecast_summary
-from src.agent import build_system_prompt, ask_agent
+from src.forecaster_agent import train_and_forecast, get_forecast_summary
+from src.orchestrator_agent import SharedContext, ChatAgent
 
 def main():
     print("=" * 55)
@@ -31,8 +31,8 @@ def main():
 
     # ── 3. الرسوم البيانية ────────────────────────────
     print("\n📈 Generating charts...")
-    plot_sales_trend(df)
-    plot_store_comparison(store_df)
+    plot_sales_trend(df, date_col='Date', sales_col='Weekly_Sales')
+    plot_store_comparison(store_df, group_col='Store')
     plot_monthly_trend(monthly_df)
     plot_holiday_impact(holiday_df)
     plot_correlations(corr_series)
@@ -45,37 +45,41 @@ def main():
     print(f"   Next 4 weeks: ${forecast_summary['next_4_weeks']:,.0f}")
     print(f"   Next 12 weeks: ${forecast_summary['next_12_weeks']:,.0f}")
 
-    # ── 5. بناء الـ Agent ─────────────────────────────
-    system_prompt = build_system_prompt(
-        summary, store_df, holiday_df, corr_series, forecast_summary
+    # ── 5. بناء الـ Context للمحادثة ───────────────────
+    ctx = SharedContext(
+        df=df, summary=summary, store_df=store_df,
+        monthly_df=monthly_df, holiday_df=holiday_df,
+        corr_series=corr_series, forecast_summary=forecast_summary,
+        forecast_df=forecast, prophet_data=prophet_data,
     )
 
     # ── 6. تحليل أولي تلقائي ─────────────────────────
     print("\n" + "=" * 55)
     print("🔍 Auto-generating initial analysis...")
     print("=" * 55)
-    
+
     history = []
-    auto_q = "حلل هذه البيانات وأعطني أهم 3 insights مع توصية عملية لكل واحدة"
-    answer, history = ask_agent(auto_q, system_prompt, history)
+    chat = ChatAgent(question="Analyze this data and give me top 3 insights with one actionable recommendation each")
+    answer, history = chat.ask(ctx)
     print(f"\n🤖 Agent:\n{answer}")
 
     # ── 7. حلقة الأسئلة ──────────────────────────────
     print("\n" + "=" * 55)
-    print("💬 Ask anything about the data (اكتب 'exit' للخروج)")
+    print("💬 Ask anything about the data (type 'exit' to quit)")
     print("=" * 55)
-    
+
     while True:
         print()
         question = input("❓ ").strip()
-        
+
         if not question:
             continue
         if question.lower() in ['exit', 'quit', 'خروج']:
             print("\n👋 Goodbye!")
             break
-        
-        answer, history = ask_agent(question, system_prompt, history)
+
+        chat = ChatAgent(question=question, history=history)
+        answer, history = chat.ask(ctx)
         print(f"\n🤖 {answer}")
 
 if __name__ == "__main__":
