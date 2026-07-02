@@ -48,42 +48,52 @@ except ImportError:
     ARABIC_AVAILABLE = False
 
 def _register_arabic_font():
-    """Register Cairo font (local) with fallback to Amiri (download)."""
-    font_name_reg = "Cairo"
-    font_name_bold = "Cairo-Bold"
+    """Register Amiri font (full Arabic coverage) with fallback to Cairo."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     base_dir = os.path.dirname(script_dir)
-    font_reg_path = os.path.join(base_dir, "fonts", "Cairo-Ragular.ttf")
-    font_bold_path = os.path.join(base_dir, "fonts", "Cairo-Blod.ttf")
 
-    # Try local Cairo fonts first
-    if os.path.exists(font_reg_path):
+    # Priority 1: Amiri (full presentation-form coverage for reshaped Arabic)
+    amiri_reg = os.path.join(base_dir, "fonts", "Amiri-Regular.ttf")
+    amiri_bld = os.path.join(base_dir, "fonts", "Amiri-Bold.ttf")
+    if os.path.exists(amiri_reg) and os.path.exists(amiri_bld):
         try:
-            pdfmetrics.registerFont(TTFont(font_name_reg, font_reg_path))
-            pdfmetrics.registerFont(TTFont(font_name_bold, font_bold_path))
-            return font_name_reg, font_name_bold
+            pdfmetrics.registerFont(TTFont("Amiri-Regular", amiri_reg))
+            pdfmetrics.registerFont(TTFont("Amiri-Bold",   amiri_bld))
+            return "Amiri-Regular", "Amiri-Bold"
         except Exception:
             pass
 
-    # Fallback: download Amiri from internet
-    fallback_path = os.path.join(base_dir, "fonts", "Amiri-Regular.ttf")
-    if not os.path.exists(fallback_path):
+    # Priority 2: Cairo (partial presentation-form coverage)
+    cairo_reg = os.path.join(base_dir, "fonts", "Cairo-Ragular.ttf")
+    cairo_bld = os.path.join(base_dir, "fonts", "Cairo-Blod.ttf")
+    if os.path.exists(cairo_reg):
+        try:
+            pdfmetrics.registerFont(TTFont("Cairo",      cairo_reg))
+            pdfmetrics.registerFont(TTFont("Cairo-Bold", cairo_bld))
+            return "Cairo", "Cairo-Bold"
+        except Exception:
+            pass
+
+    # Priority 3: Download Amiri-Regular from internet
+    if not os.path.exists(amiri_reg):
         urls = [
             "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf",
             "https://fonts.gstatic.com/s/amiri/v27/J7aRnpd8CGxBHqUpvrIw74NL.ttf",
         ]
         for url in urls:
             try:
-                urllib.request.urlretrieve(url, fallback_path)
-                if os.path.getsize(fallback_path) > 50000:
+                urllib.request.urlretrieve(url, amiri_reg)
+                if os.path.getsize(amiri_reg) > 50000:
                     break
             except Exception:
                 continue
-    try:
-        pdfmetrics.registerFont(TTFont("Amiri", fallback_path))
-        return "Amiri", "Amiri"
-    except Exception:
-        return None, None
+    if os.path.exists(amiri_reg):
+        try:
+            pdfmetrics.registerFont(TTFont("Amiri", amiri_reg))
+            return "Amiri", "Amiri"
+        except Exception:
+            pass
+    return None, None
 
 _ARABIC_FONT = None
 _ARABIC_FONT_BOLD = None
