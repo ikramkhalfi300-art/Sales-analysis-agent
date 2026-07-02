@@ -41,18 +41,17 @@ from reportlab.pdfbase.ttfonts import TTFont
 # 1. ARABIC SUPPORT
 # ═══════════════════════════════════════════════════════════
 try:
-    from arabic_reshaper import reshape
     from bidi.algorithm import get_display
     ARABIC_AVAILABLE = True
 except ImportError:
     ARABIC_AVAILABLE = False
 
 def _register_arabic_font():
-    """Register Amiri font (full Arabic coverage) with fallback to Cairo."""
+    """Register an Arabic-supporting font: Amiri (local), system Arial, or Cairo fallback."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     base_dir = os.path.dirname(script_dir)
 
-    # Priority 1: Amiri (full presentation-form coverage for reshaped Arabic)
+    # Priority 1: Amiri (local TTF files, complete Arabic coverage)
     amiri_reg = os.path.join(base_dir, "fonts", "Amiri-Regular.ttf")
     amiri_bld = os.path.join(base_dir, "fonts", "Amiri-Bold.ttf")
     if os.path.exists(amiri_reg) and os.path.exists(amiri_bld):
@@ -63,7 +62,18 @@ def _register_arabic_font():
         except Exception:
             pass
 
-    # Priority 2: Cairo (partial presentation-form coverage)
+    # Priority 2: System Arial (Windows) — has complete Arabic + presentation forms
+    arial_reg = r"C:\Windows\Fonts\arial.ttf"
+    arial_bld = r"C:\Windows\Fonts\arialbd.ttf"
+    if os.path.exists(arial_reg) and os.path.exists(arial_bld):
+        try:
+            pdfmetrics.registerFont(TTFont("Arial", arial_reg))
+            pdfmetrics.registerFont(TTFont("Arial-Bold", arial_bld))
+            return "Arial", "Arial-Bold"
+        except Exception:
+            pass
+
+    # Priority 3: Cairo (partial presentation-form coverage)
     cairo_reg = os.path.join(base_dir, "fonts", "Cairo-Ragular.ttf")
     cairo_bld = os.path.join(base_dir, "fonts", "Cairo-Blod.ttf")
     if os.path.exists(cairo_reg):
@@ -74,7 +84,7 @@ def _register_arabic_font():
         except Exception:
             pass
 
-    # Priority 3: Download Amiri-Regular from internet
+    # Priority 4: Download Amiri-Regular from internet
     if not os.path.exists(amiri_reg):
         urls = [
             "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf",
@@ -102,7 +112,7 @@ def process_text(text: str, lang: str) -> str:
     if lang != "ar" or not ARABIC_AVAILABLE:
         return str(text)
     try:
-        return get_display(reshape(str(text)))
+        return get_display(str(text))
     except Exception:
         return str(text)
 
