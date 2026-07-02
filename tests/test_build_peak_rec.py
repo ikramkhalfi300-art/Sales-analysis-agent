@@ -10,6 +10,7 @@ def _make_ctx(peak_week_str):
         'bull_12': 115000, 'bull_spread': 15.0, 'peak_week': peak_week_str,
         'peak_fc': 25000, 'action_deadline_7': '2026-07-06',
         'action_deadline_30': '2026-07-29',
+        'avg_per_period': 5000,
     }
 
 def test_peak_past():

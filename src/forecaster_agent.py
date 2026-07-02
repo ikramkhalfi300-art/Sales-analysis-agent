@@ -396,7 +396,229 @@ def compute_forecast_accuracy(prophet_data: pd.DataFrame) -> dict:
 
 
 # ════════════════════════════════════════════════
-# 8. LEADING INDICATORS
+# 8. MULTI-MODEL COMPARISON & FORECAST VALIDATION
+# ════════════════════════════════════════════════
+
+def _benchmark_naive(series: pd.Series, n_periods: int) -> np.ndarray:
+    """Naive forecast: repeat last known value."""
+    if len(series) == 0:
+        return np.full(n_periods, 0.0)
+    last_val = float(series.iloc[-1])
+    return np.full(n_periods, last_val)
+
+
+def _benchmark_seasonal_naive(series: pd.Series, n_periods: int, seasonal_periods: int = 52) -> np.ndarray:
+    """Seasonal naive: repeat last season's same-period values."""
+    if len(series) < seasonal_periods:
+        return _benchmark_naive(series, n_periods)
+    last_season = series.iloc[-seasonal_periods:].values
+    result = []
+    for i in range(n_periods):
+        result.append(float(last_season[i % len(last_season)]))
+    return np.array(result)
+
+
+def _benchmark_sma(series: pd.Series, n_periods: int, window: int = 4) -> np.ndarray:
+    """Simple Moving Average forecast: repeat average of last N periods."""
+    if len(series) < window:
+        window = len(series)
+    avg = float(series.iloc[-window:].mean())
+    return np.full(n_periods, avg)
+
+
+def _calc_mape(actual: np.ndarray, predicted: np.ndarray) -> float:
+    """Calculate MAPE safely."""
+    nonzero = actual != 0
+    if not nonzero.any():
+        return None
+    return float(np.mean(np.abs((actual[nonzero] - predicted[nonzero]) / actual[nonzero])) * 100)
+
+
+def compare_forecast_models(
+    prophet_data: pd.DataFrame,
+    seasonal_periods: int = 52,
+) -> dict:
+    """Compare HW against naive, seasonal-naive, and SMA benchmarks.
+
+    Returns dict with per-model accuracy + best model + rejection flags.
+    """
+    try:
+        hist = prophet_data.copy()
+        if list(hist.columns) != ['ds', 'y']:
+            hist.columns = ['ds', 'y']
+        hist = hist.dropna(subset=['y']).sort_values('ds').reset_index(drop=True)
+        n = len(hist)
+
+        if n < 10:
+            return {'available': False, 'message': f'Only {n} periods, minimum 10 required.'}
+
+        holdout_n = max(4, int(n * 0.2))
+        train_df = hist.iloc[:-holdout_n].copy()
+        test_df = hist.iloc[-holdout_n:].copy()
+        actuals = test_df['y'].values
+
+        series = train_df.set_index('ds')['y'].copy()
+        try:
+            series.index = pd.DatetimeIndex(series.index).to_period('W').to_timestamp()
+        except Exception:
+            pass
+
+        models = {}
+        n_train = len(series)
+
+        # ── Holt-Winters ──
+        hw_pred = None
+        try:
+            if n_train >= 52:
+                hw = ExponentialSmoothing(series, trend='add', seasonal='add', seasonal_periods=seasonal_periods).fit(optimized=True)
+            elif n_train >= 26:
+                hw = ExponentialSmoothing(series, trend='add', seasonal='add', seasonal_periods=26).fit(optimized=True)
+            else:
+                hw = ExponentialSmoothing(series, trend='add', seasonal=None).fit(optimized=True)
+            hw_pred = hw.forecast(holdout_n)[:len(actuals)]
+        except Exception:
+            try:
+                hw = ExponentialSmoothing(series, trend=None, seasonal=None).fit(optimized=True)
+                hw_pred = hw.forecast(holdout_n)[:len(actuals)]
+            except Exception:
+                pass
+        if hw_pred is not None and float(np.mean(np.abs(hw_pred))) > 0.01:
+            hw_mae = float(np.mean(np.abs(actuals - hw_pred)))
+            hw_rmse = float(np.sqrt(np.mean((actuals - hw_pred) ** 2)))
+            hw_mape = _calc_mape(actuals, hw_pred)
+            models['Holt-Winters'] = {
+                'mae': round(hw_mae, 2), 'rmse': round(hw_rmse, 2),
+                'mape': round(hw_mape, 1) if hw_mape is not None else None,
+                'predicted': hw_pred,
+            }
+
+        # ── Naive ──
+        naive_pred = _benchmark_naive(series, holdout_n)[:len(actuals)]
+        naive_mae = float(np.mean(np.abs(actuals - naive_pred)))
+        naive_rmse = float(np.sqrt(np.mean((actuals - naive_pred) ** 2)))
+        naive_mape = _calc_mape(actuals, naive_pred)
+        models['Naive'] = {
+            'mae': round(naive_mae, 2), 'rmse': round(naive_rmse, 2),
+            'mape': round(naive_mape, 1) if naive_mape is not None else None,
+        }
+
+        # ── Seasonal Naive ──
+        sn_pred = _benchmark_seasonal_naive(series, holdout_n, seasonal_periods)[:len(actuals)]
+        sn_mae = float(np.mean(np.abs(actuals - sn_pred)))
+        sn_rmse = float(np.sqrt(np.mean((actuals - sn_pred) ** 2)))
+        sn_mape = _calc_mape(actuals, sn_pred)
+        models['Seasonal Naive'] = {
+            'mae': round(sn_mae, 2), 'rmse': round(sn_rmse, 2),
+            'mape': round(sn_mape, 1) if sn_mape is not None else None,
+        }
+
+        # ── SMA(4) ──
+        sma_pred = _benchmark_sma(series, holdout_n, window=4)[:len(actuals)]
+        sma_mae = float(np.mean(np.abs(actuals - sma_pred)))
+        sma_rmse = float(np.sqrt(np.mean((actuals - sma_pred) ** 2)))
+        sma_mape = _calc_mape(actuals, sma_pred)
+        models['SMA(4)'] = {
+            'mae': round(sma_mae, 2), 'rmse': round(sma_rmse, 2),
+            'mape': round(sma_mape, 1) if sma_mape is not None else None,
+        }
+
+        # ── Best model selection (by MAPE) ──
+        valid_models = {k: v for k, v in models.items() if v['mape'] is not None}
+        best_model = min(valid_models, key=lambda k: valid_models[k]['mape']) if valid_models else 'Holt-Winters'
+        best_mape = valid_models[best_model]['mape'] if best_model in valid_models else None
+
+        # ── Rejection logic ──
+        rejection_flags = []
+        hw_ok = 'Holt-Winters' in models
+        if hw_ok:
+            hw_m = models['Holt-Winters']
+            if hw_m['mape'] is not None and hw_m['mape'] > 50:
+                rejection_flags.append('HW_MAPE_EXCEEDS_50')
+            if 'Naive' in models and hw_m['mape'] is not None and models['Naive']['mape'] is not None:
+                if hw_m['mape'] > models['Naive']['mape'] * 2:
+                    rejection_flags.append('HW_WORSE_THAN_NAIVE_2X')
+        if best_mape is not None and best_mape > 50:
+            rejection_flags.append('ALL_MODELS_MAPE_EXCEEDS_50')
+        if len(valid_models) >= 2:
+            mape_values = [v['mape'] for v in valid_models.values() if v['mape'] is not None]
+            if mape_values and max(mape_values) > 50:
+                rejection_flags.append('FORECAST_UNRELIABLE')
+
+        rejected = len(rejection_flags) > 0
+
+        return {
+            'available': True,
+            'models': models,
+            'best_model': best_model,
+            'best_mape': best_mape,
+            'n_holdout': holdout_n,
+            'n_train': n_train,
+            'rejected': rejected,
+            'rejection_flags': rejection_flags,
+            'model_agreement': len(valid_models) > 1 and (
+                max(v['mape'] for v in valid_models.values() if v['mape'] is not None)
+                - min(v['mape'] for v in valid_models.values() if v['mape'] is not None) < 5
+            ) if valid_models else False,
+            'limitation': (
+                f"In-sample pseudo-holdout: trained on {n_train} periods, "
+                f"validated on last {holdout_n} periods. "
+                "True out-of-sample accuracy will differ."
+            ),
+        }
+    except Exception as e:
+        return {'available': False, 'message': f'Model comparison failed: {str(e)}'}
+
+
+def adjust_confidence(
+    base_confidence: str,
+    cv_pct: float,
+    fc_gap_pct: float,
+    model_comparison: dict,
+) -> str:
+    """Auto-adjust confidence based on multi-factor assessment.
+
+    Starts from CV-based confidence, then:
+    - Downgrade 1 step if gap > 200%
+    - Downgrade 1 step if HW MAPE > 30%
+    - Downgrade 1 step if best MAPE > 40%
+    - Downgrade 1 step if model rejected
+    - Upgrade 1 step if all models agree AND forecast close to history
+    """
+    levels = ['Low', 'Medium', 'High']
+    idx = levels.index(base_confidence) if base_confidence in levels else 1
+
+    reasons = []
+
+    mc = model_comparison or {}
+    if mc.get('rejected'):
+        idx = max(0, idx - 1)
+        reasons.append('model_rejected')
+
+    if 'Holt-Winters' in mc.get('models', {}):
+        hw_mape = mc['models']['Holt-Winters'].get('mape')
+        if hw_mape is not None and hw_mape > 30:
+            idx = max(0, idx - 1)
+            reasons.append(f'HW_MAPE_{hw_mape:.0f}')
+
+    best_mape = mc.get('best_mape')
+    if best_mape is not None and best_mape > 40:
+        idx = max(0, idx - 1)
+        reasons.append(f'best_MAPE_{best_mape:.0f}')
+
+    if fc_gap_pct > 200:
+        idx = max(0, idx - 1)
+        reasons.append(f'gap_{fc_gap_pct:.0f}pct')
+
+    if mc.get('model_agreement') and abs(fc_gap_pct) < 50:
+        idx = min(len(levels) - 1, idx + 1)
+        reasons.append('model_agreement')
+
+    adjusted = levels[idx]
+    return adjusted if adjusted != base_confidence or reasons else base_confidence
+
+
+# ════════════════════════════════════════════════
+# 9. LEADING INDICATORS
 # ════════════════════════════════════════════════
 
 def build_leading_indicators(
@@ -723,26 +945,60 @@ def get_forecast_summary(
     freq_label = forecast.attrs.get('freq_label', 'Unknown')
     accuracy   = forecast.attrs.get('accuracy',   {'available': False})
 
-    # ── Leading Indicators ────────────────────────
-    li_df = future_from_now if len(future_from_now) >= 3 else future_for_metrics
-    leading_indicators = build_leading_indicators(li_df, avg_hist, group_col_avg)
-
-    # ── Decision Rule ─────────────────────────────
-    decision_rule = (
-        f"Plan operations around the BASE CASE (${next_12:,.0f} over 12 periods). "
-        f"Stress-test budgets against the BEAR CASE "
-        f"(${bear_12:,.0f}, {bear_spread:+.0f}% from base — {sc_method}). "
-        f"Allocate BULL CASE resources (${bull_12:,.0f}) only if leading indicators "
-        f"confirm upward trajectory in the first 3 periods."
+    # ── Model Comparison (multi-model validation) ─
+    seasonal_p = forecast.attrs.get('seasonal_period', 52)
+    model_comparison = (
+        compare_forecast_models(prophet_data, seasonal_periods=seasonal_p)
+        if prophet_data is not None else {'available': False}
     )
 
-    # ── الفجوة بين التوقع والتاريخي ──────────────
+    # ── Adjust confidence ─────────────────────────
     fc12_avg_per_period = next_12 / 12 if next_12 > 0 else 0
     fc_gap_pct = (
         (fc12_avg_per_period - avg_hist) / avg_hist * 100
         if avg_hist > 0 else 0
     )
+    adjusted_confidence = adjust_confidence(
+        base_confidence=confidence,
+        cv_pct=cv_pct,
+        fc_gap_pct=fc_gap_pct,
+        model_comparison=model_comparison,
+    )
+    confidence_changed = adjusted_confidence != confidence
+    confidence_reasons = []
+    if confidence_changed:
+        if model_comparison.get('rejected'):
+            confidence_reasons.append('model rejected')
+        if model_comparison.get('best_mape') and model_comparison['best_mape'] > 40:
+            confidence_reasons.append(f"best MAPE {model_comparison['best_mape']:.0f}%")
+        if fc_gap_pct > 200:
+            confidence_reasons.append(f"forecast gap {fc_gap_pct:.0f}%")
 
+    # ── Leading Indicators ────────────────────────
+    li_df = future_from_now if len(future_from_now) >= 3 else future_for_metrics
+    leading_indicators = build_leading_indicators(li_df, avg_hist, group_col_avg)
+
+    # ── Decision Rule ─────────────────────────────
+    if model_comparison.get('rejected'):
+        decision_rule = (
+            f"⚠️ FORECAST REJECTED. Multi-model validation failed: "
+            f"{', '.join(model_comparison.get('rejection_flags', []))}. "
+            f"Best model ({model_comparison.get('best_model', '?')}) "
+            f"MAPE = {model_comparison.get('best_mape', 0):.0f}%. "
+            f"Use Bear case (${bear_12:,.0f}) as conservative planning floor. "
+            f"Do not budget against the base case. "
+            f"Re-forecast with additional data or try a different model specification."
+        )
+    else:
+        decision_rule = (
+            f"Plan operations around the BASE CASE (${next_12:,.0f} over 12 periods). "
+            f"Stress-test budgets against the BEAR CASE "
+            f"(${bear_12:,.0f}, {bear_spread:+.0f}% from base — {sc_method}). "
+            f"Allocate BULL CASE resources (${bull_12:,.0f}) only if leading indicators "
+            f"confirm upward trajectory in the first 3 periods."
+        )
+
+    # ── الفجوة بين التوقع والتاريخي ──────────────
     return {
         # أرقام أساسية
         'next_4_weeks':         round(next_4,  2),
@@ -764,7 +1020,7 @@ def get_forecast_summary(
         'bull_probability':     0.0,
 
         # جودة النموذج
-        'confidence_level':     confidence,
+        'confidence_level':     adjusted_confidence,
         'volatility':           volatility,
         'sanity_check':         sanity,
         'cv_pct':               round(cv_pct, 1),
@@ -781,6 +1037,12 @@ def get_forecast_summary(
         # مساعدات التخطيط
         'leading_indicators':   leading_indicators,
         'decision_rule':        decision_rule,
+
+        # مخرجات Phase 4 — التحقق متعدد النماذج
+        'model_comparison':     model_comparison,
+        'confidence_changed':   confidence_changed,
+        'confidence_reasons':   confidence_reasons,
+        'confidence_original':  confidence if confidence_changed else None,
     }
 
 

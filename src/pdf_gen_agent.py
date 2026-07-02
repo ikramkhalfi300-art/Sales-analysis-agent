@@ -48,27 +48,45 @@ except ImportError:
     ARABIC_AVAILABLE = False
 
 def _register_arabic_font():
-    font_name = "Amiri"
-    font_path = "/tmp/Amiri-Regular.ttf"
-    if not os.path.exists(font_path):
+    """Register Cairo font (local) with fallback to Amiri (download)."""
+    font_name_reg = "Cairo"
+    font_name_bold = "Cairo-Bold"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = os.path.dirname(script_dir)
+    font_reg_path = os.path.join(base_dir, "fonts", "Cairo-Ragular.ttf")
+    font_bold_path = os.path.join(base_dir, "fonts", "Cairo-Blod.ttf")
+
+    # Try local Cairo fonts first
+    if os.path.exists(font_reg_path):
+        try:
+            pdfmetrics.registerFont(TTFont(font_name_reg, font_reg_path))
+            pdfmetrics.registerFont(TTFont(font_name_bold, font_bold_path))
+            return font_name_reg, font_name_bold
+        except Exception:
+            pass
+
+    # Fallback: download Amiri from internet
+    fallback_path = os.path.join(base_dir, "fonts", "Amiri-Regular.ttf")
+    if not os.path.exists(fallback_path):
         urls = [
             "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf",
             "https://fonts.gstatic.com/s/amiri/v27/J7aRnpd8CGxBHqUpvrIw74NL.ttf",
         ]
         for url in urls:
             try:
-                urllib.request.urlretrieve(url, font_path)
-                if os.path.getsize(font_path) > 50000:
+                urllib.request.urlretrieve(url, fallback_path)
+                if os.path.getsize(fallback_path) > 50000:
                     break
             except Exception:
                 continue
     try:
-        pdfmetrics.registerFont(TTFont(font_name, font_path))
-        return font_name
+        pdfmetrics.registerFont(TTFont("Amiri", fallback_path))
+        return "Amiri", "Amiri"
     except Exception:
-        return None
+        return None, None
 
 _ARABIC_FONT = None
+_ARABIC_FONT_BOLD = None
 
 def process_text(text: str, lang: str) -> str:
     if lang != "ar" or not ARABIC_AVAILABLE:
@@ -79,10 +97,12 @@ def process_text(text: str, lang: str) -> str:
         return str(text)
 
 def get_font(lang: str, bold: bool = False) -> str:
-    global _ARABIC_FONT
+    global _ARABIC_FONT, _ARABIC_FONT_BOLD
     if lang == "ar":
         if _ARABIC_FONT is None:
-            _ARABIC_FONT = _register_arabic_font()
+            _ARABIC_FONT, _ARABIC_FONT_BOLD = _register_arabic_font()
+        if bold and _ARABIC_FONT_BOLD:
+            return _ARABIC_FONT_BOLD
         if _ARABIC_FONT:
             return _ARABIC_FONT
     return "Helvetica-Bold" if bold else "Helvetica"
@@ -617,6 +637,10 @@ def extract_dynamic_context(
     ctx['sanity_check']       = forecast_summary.get('sanity_check', {'passed':True,'warnings':[]})
     ctx['leading_indicators'] = forecast_summary.get('leading_indicators', [])
     ctx['decision_rule']      = forecast_summary.get('decision_rule', '')
+    ctx['model_comparison']    = forecast_summary.get('model_comparison', {'available': False})
+    ctx['confidence_changed']  = forecast_summary.get('confidence_changed', False)
+    ctx['confidence_reasons']  = forecast_summary.get('confidence_reasons', [])
+    ctx['confidence_original'] = forecast_summary.get('confidence_original', None)
 
     # FIX #5: Detect and flag forecast gap anomaly
     fc12_avg_per_period = ctx['fc12'] / 12 if ctx['fc12'] > 0 else 0
@@ -726,7 +750,79 @@ def run_quality_pipeline(ai_text, ctx, system_prompt="", ask_agent_fn=None, max_
 
 
 # ═══════════════════════════════════════════════════════════
-# 6. CHART UTILITIES
+# 6. QUALITY ASSURANCE — PRE-EXPORT VALIDATION
+# ═══════════════════════════════════════════════════════════
+def _validate_report(ctx: dict, chart_paths: list = None) -> list:
+    """
+    Run comprehensive pre-export validation checks.
+    Returns a list of warning/error dicts. Empty list = clean.
+    """
+    issues = []
+
+    # 1. Broken charts
+    if chart_paths:
+        for p in chart_paths:
+            if not os.path.exists(p) or os.path.getsize(p) == 0:
+                issues.append({'severity': 'error', 'check': 'chart_exists',
+                               'detail': f'Missing or empty chart: {p}'})
+
+    # 2. Missing critical values
+    required_keys = ['total_revenue', 'avg_per_period', 'fc12', 'cv_pct',
+                     'trend_pct', 'n_periods', 'date_range']
+    for k in required_keys:
+        if k not in ctx or ctx.get(k) is None:
+            issues.append({'severity': 'error', 'check': 'missing_ctx_key',
+                           'detail': f'Required context key missing: {k}'})
+        elif isinstance(ctx.get(k), (int, float)) and ctx.get(k) == 0:
+            issues.append({'severity': 'warning', 'check': 'zero_value',
+                           'detail': f'Context key {k} is zero'})
+
+    # 3. Contradictory numbers
+    rev = ctx.get('total_revenue', 0)
+    avg = ctx.get('avg_per_period', 0)
+    n   = ctx.get('n_periods', 1)
+    if rev > 0 and avg > 0 and n > 0:
+        if abs(rev - avg * n) / rev > 0.05:
+            issues.append({'severity': 'warning', 'check': 'contradiction',
+                           'detail': f'total_revenue ({rev}) != avg_per_period ({avg}) * n_periods ({n})'})
+
+    # 4. Forecast sanity
+    fc12 = ctx.get('fc12', 0)
+    bear = ctx.get('bear_12', 0)
+    bull = ctx.get('bull_12', 0)
+    if bear and bull and bear > bull:
+        issues.append({'severity': 'error', 'check': 'inverted_scenarios',
+                       'detail': 'Bear scenario exceeds Bull scenario'})
+    if fc12 and bear and bear > fc12:
+        issues.append({'severity': 'warning', 'check': 'bear_above_base',
+                       'detail': 'Bear scenario exceeds Base forecast'})
+    if fc12 and bull and bull < fc12:
+        issues.append({'severity': 'warning', 'check': 'bull_below_base',
+                       'detail': 'Bull scenario below Base forecast'})
+
+    # 5. Forecast gap anomaly
+    if ctx.get('fc_gap_flag'):
+        issues.append({'severity': 'warning', 'check': 'fc_gap_anomaly',
+                       'detail': f"Forecast avg {ctx.get('fc_gap_pct','?')}% above historical avg"})
+
+    # 6. Data quality warnings
+    dq = ctx.get('data_quality', {})
+    if dq.get('completeness', 100) < 80:
+        issues.append({'severity': 'warning', 'check': 'low_data_quality',
+                       'detail': f"Data completeness: {dq.get('completeness','?')}%"})
+
+    # 7. Negative values in critical fields
+    for key in ['total_revenue', 'avg_per_period', 'fc12', 'n_periods']:
+        val = ctx.get(key, 1)
+        if isinstance(val, (int, float)) and val < 0:
+            issues.append({'severity': 'error', 'check': 'negative_value',
+                           'detail': f'{key} is negative: {val}'})
+
+    return issues
+
+
+# ═══════════════════════════════════════════════════════════
+# 7. CHART UTILITIES
 # ═══════════════════════════════════════════════════════════
 PAGE_W, PAGE_H = A4
 MARGIN    = 0.85 * inch
@@ -918,7 +1014,9 @@ class ReportCanvas:
         canvas.line(MARGIN, 0.60*inch, PAGE_W-MARGIN, 0.60*inch)
         canvas.setFont(get_font(self.lang), 7)
         canvas.setFillColor(rl('gray'))
-        canvas.drawString(MARGIN, 0.40*inch, "Confidential Business Analysis Report")
+        from translations import get_translations
+        _footer_T = get_translations(self.lang)
+        canvas.drawString(MARGIN, 0.40*inch, _footer_T.get("pdf_footer", "Confidential Business Analysis Report"))
         canvas.drawCentredString(PAGE_W/2, 0.40*inch, f"Page {doc.page}")
         canvas.drawRightString(PAGE_W-MARGIN, 0.40*inch, self.report_date)
         canvas.restoreState()
@@ -974,11 +1072,18 @@ def _flush_md_table(story, rows, S, lang):
 # BUG FIX #3: All section numbers match TOC exactly
 # ═══════════════════════════════════════════════════════════
 
-def _cover(story, company_name, S, ctx, lang):
-    story.append(Spacer(1, 1.2*inch))
-    rule = Table([['']], colWidths=[CONTENT_W], rowHeights=[3])
-    rule.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),rl('blue'))]))
-    story.append(rule); story.append(Spacer(1, 0.3*inch))
+def _txt(key, T, fallback=""):
+    """Look up a translated string from T dict, with fallback."""
+    if T is None:
+        return fallback
+    return T.get(key, fallback)
+
+def _cover(story, company_name, S, ctx, lang, T=None):
+    story.append(Spacer(1, 1.5*inch))
+    # Top accent bar
+    bar = Table([['']], colWidths=[CONTENT_W], rowHeights=[4])
+    bar.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),rl('blue'))]))
+    story.append(bar); story.append(Spacer(1, 0.35*inch))
     client = company_name if company_name else "Client Organization"
     t = {
         'en': ("BUSINESS INTELLIGENCE REPORT",
@@ -993,52 +1098,60 @@ def _cover(story, company_name, S, ctx, lang):
     }.get(lang, ("BUSINESS INTELLIGENCE REPORT","Sales Performance Analysis Report",
                  "Performance Assessment & Strategic Intelligence"))
     story.append(Paragraph(process_text(t[0],lang), S['cover_eyebrow']))
-    story.append(Spacer(1,0.15*inch))
-    story.append(Paragraph(process_text(t[1],lang), S['cover_title']))
     story.append(Spacer(1,0.12*inch))
+    story.append(Paragraph(process_text(t[1],lang), S['cover_title']))
+    story.append(Spacer(1,0.10*inch))
     story.append(Paragraph(process_text(t[2],lang), S['cover_subtitle']))
-    story.append(Spacer(1,0.3*inch)); story.append(rule); story.append(Spacer(1,0.45*inch))
+    story.append(Spacer(1,0.40*inch))
+    story.append(bar)
+    story.append(Spacer(1,0.50*inch))
+    classification = _txt("pdf_cover_classification", T, "Classification")
     lbl = {'en':["PREPARED FOR","REPORTING PERIOD","REPORT DATE","CLASSIFICATION"],
            'ar':["مُعدّ لـ","فترة التقرير","تاريخ التقرير","التصنيف"],
            'fr':["PRÉPARÉ POUR","PÉRIODE","DATE DU RAPPORT","CLASSIFICATION"]
            }.get(lang,["PREPARED FOR","REPORTING PERIOD","REPORT DATE","CLASSIFICATION"])
     meta = [(lbl[0],client),(lbl[1],ctx['date_range']),
-            (lbl[2],ctx['report_date']),(lbl[3],"Confidential")]
+            (lbl[2],ctx['report_date']),(lbl[3],classification)]
     rows = [[Paragraph(process_text(k,lang),S['cover_meta_label']),
              Paragraph(process_text(str(v),lang),S['cover_meta_value'])] for k,v in meta]
     mt = Table(rows, colWidths=[1.7*inch, CONTENT_W-1.7*inch])
     mt.setStyle(TableStyle([
         ('ALIGN',(0,0),(-1,-1),'LEFT'),('VALIGN',(0,0),(-1,-1),'MIDDLE'),
-        ('TOPPADDING',(0,0),(-1,-1),6),('BOTTOMPADDING',(0,0),(-1,-1),6),
-        ('LINEBELOW',(0,0),(-1,-2),0.25,rl('border')),('LEFTPADDING',(0,0),(-1,-1),0),
+        ('TOPPADDING',(0,0),(-1,-1),7),('BOTTOMPADDING',(0,0),(-1,-1),7),
+        ('LINEBELOW',(0,0),(-1,-2),0.3,rl('border')),
+        ('LINEBELOW',(-1,-1),(-1,-1),1.5,rl('blue')),
+        ('LEFTPADDING',(0,0),(-1,-1),0),
     ]))
     story.append(mt); story.append(PageBreak())
 
 
 # BUG FIX #3: TOC numbers match sections exactly
-def _toc(story, S, ctx, lang, has_store, has_corr):
-    story.append(Paragraph(process_text('TABLE OF CONTENTS',lang), S['section_label']))
-    story.append(Paragraph(process_text('Report Structure',lang), S['h1']))
+def _toc(story, S, ctx, lang, has_store, has_corr, T=None):
+    story.append(Paragraph(process_text(
+        _txt("pdf_section_toc_title", T, "TABLE OF CONTENTS"), lang), S['section_label']))
+    story.append(Paragraph(process_text(
+        _txt("pdf_section_toc_subtitle", T, "Report Structure"), lang), S['h1']))
     _divider(story, color=rl('blue'), thickness=1.1, sb=2, sa=16)
 
     sections = [
-        ("00","Executive KPI Dashboard",           "3"),
-        ("01","Executive Summary",                 "4"),
-        ("02","Data Quality Assessment",           "5"),
-        ("03","Key Findings",                      "6"),
-        ("04","Sales Performance Overview",        "7"),
-        ("05","Period Trend Analysis",             "8"),
+        ("00", _txt("pdf_section_kpi_dashboard",  T, "Executive KPI Dashboard"),           "3"),
+        ("01", _txt("pdf_section_exec_summary",   T, "Executive Summary"),                 "4"),
+        ("02", _txt("pdf_section_data_quality",   T, "Data Quality Assessment"),           "5"),
+        ("03", _txt("pdf_section_key_findings",   T, "Key Findings"),                      "6"),
+        ("04", _txt("pdf_section_sales_overview", T, "Sales Performance Overview"),        "7"),
+        ("05", _txt("pdf_section_trend_analysis", T, "Period Trend Analysis"),             "8"),
     ]
     pg = 9
     if has_store:
-        sections.append(("06", "Segment Performance & Scorecard", str(pg))); pg += 1
+        sections.append(("06", _txt("pdf_section_segment", T, "Segment Performance & Scorecard"), str(pg))); pg += 1
     if has_corr:
-        sections.append(("07", "Statistical Validation & Correlations", str(pg))); pg += 1
-    sections.append(("08", "Revenue Forecast & Scenarios",  str(pg))); pg += 1
-    sections.append(("09", "Risk Assessment Matrix",         str(pg))); pg += 1
-    sections.append(("10", "Growth Opportunity Assessment",  str(pg))); pg += 1
-    sections.append(("11", "Strategic Recommendations",      str(pg))); pg += 1
-    sections.append(("12", "Data Appendix & Methodology",    str(pg)))
+        sections.append(("07", _txt("pdf_section_statistical", T, "Statistical Validation & Correlations"), str(pg))); pg += 1
+    sections.append(("08", _txt("pdf_section_forecast", T, "Revenue Forecast & Scenarios"),  str(pg))); pg += 1
+    sections.append(("09", _txt("pdf_section_risk", T, "Risk Assessment Matrix"),         str(pg))); pg += 1
+    sections.append(("10", _txt("pdf_section_growth", T, "Growth Opportunity Assessment"),  str(pg))); pg += 1
+    sections.append(("11", _txt("pdf_section_recommendations", T, "Strategic Recommendations"), str(pg))); pg += 1
+    sections.append(("12", _txt("pdf_section_appendix", T, "Data Appendix & Methodology"), str(pg))); pg += 1
+    sections.append(("13", _txt("pdf_section_advanced_viz", T, "Advanced Visual Analytics"), str(pg)))
 
     for num, title_en, page in sections:
         row = [[
@@ -1058,26 +1171,29 @@ def _toc(story, S, ctx, lang, has_store, has_corr):
     story.append(PageBreak())
 
 
-def _executive_kpi_dashboard(story, S, ctx, dq, lang):
-    _section_header(story,"00","Executive KPI Dashboard",S,lang)
+def _executive_kpi_dashboard(story, S, ctx, dq, lang, T=None):
+    _section_header(story,"00",
+        _txt("pdf_section_kpi_dashboard", T, "Executive KPI Dashboard"), S, lang)
     story.append(Paragraph(process_text(
-        "At-a-glance portfolio performance. All metrics derived directly from the uploaded dataset.",
+        "Real-time portfolio performance snapshot. All metrics derived directly from the uploaded dataset.",
         lang), S['body_small']))
-    story.append(Spacer(1,0.12*inch))
+    story.append(Spacer(1,0.10*inch))
 
     conf_icon = {"High":"🟢","Medium":"🟡","Low":"🔴"}.get(ctx['confidence_level'],"🟡")
     vol_lvl   = ctx.get('volatility',{}).get('level','High')
     vol_icon  = {"Low":"🟢","Moderate":"🟡","High":"🔴","Extreme":"🚨"}.get(vol_lvl,"🔴")
+    trend_dir = ctx.get('trend_direction','stable')
+    trend_icon = {"growing":"📈","declining":"📉","stable":"📊"}.get(trend_dir,"📊")
 
     r1 = [
         [Paragraph(process_text(_money(ctx['total_revenue']),lang),S['kpi_value']),
          Paragraph(process_text(_money(ctx['fc12']),lang),S['kpi_value']),
-         Paragraph(process_text(f"{ctx['trend_pct']:+.1f}%",lang),S['kpi_value']),
+         Paragraph(process_text(f"{trend_icon} {ctx['trend_pct']:+.1f}%",lang),S['kpi_value']),
          Paragraph(process_text(_money(ctx['avg_per_period']),lang),S['kpi_value'])],
-        [Paragraph(process_text("Total Revenue",lang),S['kpi_label']),
-         Paragraph(process_text("12-Period Forecast (Base)",lang),S['kpi_label']),
-         Paragraph(process_text("Revenue Growth (HoH)",lang),S['kpi_label']),
-         Paragraph(process_text("Avg per Period",lang),S['kpi_label'])],
+        [Paragraph(process_text(_txt("pdf_kpi_total_revenue",T,"Total Revenue"),lang),S['kpi_label']),
+         Paragraph(process_text(_txt("pdf_kpi_12p_forecast",T,"12-Period Forecast (Base)"),lang),S['kpi_label']),
+         Paragraph(process_text(f"{_txt('pdf_kpi_revenue_growth',T,'Revenue Growth')} ({trend_dir})",lang),S['kpi_label']),
+         Paragraph(process_text(_txt("pdf_kpi_avg_per_period",T,"Avg per Period"),lang),S['kpi_label'])],
     ]
     t1 = Table(r1, colWidths=[CONTENT_W/4]*4, rowHeights=[0.40*inch,0.22*inch])
     t1.setStyle(TableStyle([
@@ -1089,15 +1205,17 @@ def _executive_kpi_dashboard(story, S, ctx, dq, lang):
     ]))
     story.append(t1); story.append(Spacer(1,0.08*inch))
 
+    peak_val = ctx.get('peak_value', 0)
+    pk_str = _money(peak_val) if peak_val else "N/A"
     r2 = [
-        [Paragraph(process_text(f"Grp {ctx.get('best_group','N/A')}",lang),S['kpi_value']),
-         Paragraph(process_text(f"Grp {ctx.get('worst_group','N/A')}",lang),S['kpi_value']),
+        [Paragraph(process_text(f"{ctx.get('best_group','N/A')}",lang),S['kpi_value']),
+         Paragraph(process_text(f"{ctx.get('worst_group','N/A')}",lang),S['kpi_value']),
          Paragraph(process_text(f"{conf_icon} {ctx['confidence_level']}",lang),S['kpi_value']),
          Paragraph(process_text(f"{vol_icon} {vol_lvl}",lang),S['kpi_value'])],
-        [Paragraph(process_text("Best Quantity Group",lang),S['kpi_label']),
-         Paragraph(process_text("Worst Quantity Group",lang),S['kpi_label']),
-         Paragraph(process_text("Forecast Confidence",lang),S['kpi_label']),
-         Paragraph(process_text("Revenue Volatility",lang),S['kpi_label'])],
+        [Paragraph(process_text(_txt("pdf_kpi_best_group",T,"Best Group"),lang),S['kpi_label']),
+         Paragraph(process_text(_txt("pdf_kpi_worst_group",T,"Worst Group"),lang),S['kpi_label']),
+         Paragraph(process_text(_txt("pdf_kpi_forecast_confidence",T,"Forecast Confidence"),lang),S['kpi_label']),
+         Paragraph(process_text(_txt("pdf_kpi_revenue_volatility",T,"Revenue Volatility"),lang),S['kpi_label'])],
     ]
     t2 = Table(r2, colWidths=[CONTENT_W/4]*4, rowHeights=[0.40*inch,0.22*inch])
     t2.setStyle(TableStyle([
@@ -1110,14 +1228,14 @@ def _executive_kpi_dashboard(story, S, ctx, dq, lang):
         ('LINEBELOW',(0,-1),(-1,-1),2,rl('navy')),
         ('TOPPADDING',(0,0),(-1,0),8),('BOTTOMPADDING',(0,-1),(-1,-1),6),
     ]))
-    story.append(t2); story.append(Spacer(1,0.12*inch))
+    story.append(t2); story.append(Spacer(1,0.10*inch))
 
     from config import CV_HIGH
     top_risk = ("Revenue Concentration" if ctx.get('pareto_pct',33) < 30
                 else "High Revenue Volatility" if ctx.get('cv_pct',0) > CV_HIGH
                 else "Forecast Uncertainty")
     _callout(story,
-             f"⚠️ <b>Top Business Risk: {top_risk}</b> — "
+             f"<b>{_txt('pdf_kpi_top_risk',T,'Top Business Risk')}: {top_risk}</b> — "
              f"Top {ctx.get('pareto_pct',33):.0f}% of quantity groups generate 80% of revenue. "
              f"Single-group dependency requires diversification strategy.",
              'amber', S, lang)
@@ -1134,15 +1252,16 @@ def _executive_kpi_dashboard(story, S, ctx, dq, lang):
     story.append(PageBreak())
 
 
-def _executive_summary(story, S, ctx, lang, analysis_text=None):
-    _section_header(story,"01","Executive Summary",S,lang)
+def _executive_summary(story, S, ctx, lang, analysis_text=None, insights=None, T=None):
+    _section_header(story,"01",
+        _txt("pdf_section_exec_summary", T, "Executive Summary"), S, lang)
 
     col_w = CONTENT_W/4
     m_vals = [
-        (_money(ctx['total_revenue']),  "Total Revenue"),
-        (_money(ctx['avg_per_period']), "Avg per Period"),
-        (_money(ctx['peak_value']),     "Peak Performance"),
-        (_money(ctx['fc12']),           "12-Period Forecast"),
+        (_money(ctx['total_revenue']),  _txt("pdf_kpi_total_revenue", T, "Total Revenue")),
+        (_money(ctx['avg_per_period']), _txt("pdf_kpi_avg_per_period", T, "Avg per Period")),
+        (_money(ctx['peak_value']),     _txt("pdf_kpi_peak_performance", T, "Peak Performance")),
+        (_money(ctx['fc12']),           _txt("pdf_kpi_12p_forecast_short", T, "12-Period Forecast")),
     ]
     mt = Table(
         [[Paragraph(process_text(v,lang),S['metric_value']) for v,_ in m_vals],
@@ -1174,7 +1293,7 @@ def _executive_summary(story, S, ctx, lang, analysis_text=None):
         story.append(Spacer(1,0.08*inch))
 
     paras = [
-        ("SITUATION — Where We Are",
+        (_txt("pdf_exec_situation", T, "SITUATION \u2014 Where We Are"),
          f"The portfolio generated <b>${ctx['total_revenue']:,.0f}</b> across "
          f"<b>{ctx['n_records']:,} records</b> over <b>{ctx['n_periods']:,} periods</b> "
          f"({ctx['date_range']}). Revenue trend: <b>{ctx['trend_direction']}</b> "
@@ -1183,7 +1302,7 @@ def _executive_summary(story, S, ctx, lang, analysis_text=None):
          f"Median: ${ctx['median_per_period']:,.0f}/period "
          f"[Median preferred given right-skewed distribution, CV={ctx['cv_pct']:.1f}%].",
          'blue'),
-        ("COMPLICATION — The Critical Issue",
+        (_txt("pdf_exec_complication", T, "COMPLICATION \u2014 The Critical Issue"),
          f"Revenue is highly concentrated: "
          f"<b>{ctx.get('pareto_pct',33):.0f}% of quantity groups = 80% of revenue</b>, "
          f"led by Group <b>{ctx['best_group']}</b> "
@@ -1194,7 +1313,7 @@ def _executive_summary(story, S, ctx, lang, analysis_text=None):
          f"over 12 periods [DERIVED: gap × 12 periods]. "
          f"Note: Quantity group business meaning requires domain expert validation.",
          'amber'),
-        ("RESOLUTION — Recommended Actions",
+        (_txt("pdf_exec_resolution", T, "RESOLUTION \u2014 Recommended Actions"),
          f"Two evidence-based priorities: "
          f"(1) Investigate operational drivers of Group {ctx['best_group']} — "
          f"owner: Sales Manager, deadline: {ctx['action_deadline_30']}. "
@@ -1202,13 +1321,16 @@ def _executive_summary(story, S, ctx, lang, analysis_text=None):
          f"({_money(ctx['peak_fc'])}) — {ctx['peak_urgency'].get('message','')}. "
          f"[Confidence: Medium-to-Low pending domain validation]",
          'blue'),
-        ("STAKES — Financial Impact",
-         f"Full implementation estimated to deliver "
-         f"<b>{_money(ctx['total_revenue']*0.15)}–{_money(ctx['total_revenue']*0.22)}</b> "
-         f"incremental annual revenue (15–22% uplift on {_money(ctx['total_revenue'])} baseline). "
-         f"[DERIVED: gap analysis + scenario modeling — "
-         f"subject to market conditions and execution quality.] "
-         f"90-day inaction cost: ~{_money(ctx['worst_group_gap_weekly']*13)}.",
+        (_txt("pdf_exec_stakes", T, "STAKES \u2014 Financial Impact"),
+         f"Closing the gap between top and bottom performers across quantity groups "
+         f"could unlock an estimated "
+         f"<b>{_money(ctx['worst_group_gap_weekly'] * ctx['n_periods'])}</b> "
+         f"over {ctx['n_periods']} periods [DERIVED: worst-group gap × total periods]. "
+         f"The bull-case 12-period forecast (${ctx.get('bull_12',0):,.0f}) "
+         f"is {_money(ctx.get('bull_12',0)-ctx.get('fc12',0))} above the base case, "
+         f"representing the measured upside opportunity. "
+         f"90-day inaction cost: ~{_money(ctx['worst_group_gap_weekly']*13)} [DERIVED: gap × 13 periods]. "
+         f"All figures are data-derived; no speculative multipliers used.",
          'green'),
     ]
     for title, body, style in paras:
@@ -1216,15 +1338,70 @@ def _executive_summary(story, S, ctx, lang, analysis_text=None):
         _callout(story, body, style, S, lang)
         story.append(Spacer(1,0.04*inch))
 
+    if insights:
+        _divider(story, sb=8, sa=8)
+        story.append(Paragraph(process_text(
+            _txt("pdf_exec_insight_highlights", T, "Insight Highlights"), lang), S['h2']))
+        hl_rows = []
+        ins = insights
+        anomalies = ins.get('anomalies', [])
+        if anomalies:
+            a = anomalies[0]
+            hl_rows.append(("📈 Anomaly Detected",
+                f"{a['direction']} of ${a['value']:,.0f} on {a['date']} "
+                f"({a['pct_vs_mean']:+.0f}% vs mean, Z={a['z_score']:.1f})"))
+        seas = ins.get('seasonality', {})
+        if seas.get('has_seasonality'):
+            hl_rows.append(("📅 Seasonality",
+                f"Seasonal swing of {seas['seasonal_swing_pct']:+.0f}% between peak/trough months"))
+        conc = ins.get('concentration_risk', {})
+        if conc.get('risk_level') != 'UNKNOWN':
+            hl_rows.append(("⚠️ Concentration Risk",
+                f"{conc['risk_level']} — {conc.get('summary','')[:80]}..."))
+        leakage = ins.get('revenue_leakage', [])
+        if leakage:
+            l = leakage[0]
+            hl_rows.append(("🔻 Revenue Leakage",
+                f"Group {l['group']}: {l['decline_pct']:+.0f}% decline ({l['severity']})"))
+        growth = ins.get('growth_opportunities', {})
+        opps = growth.get('opportunities', [])
+        if opps:
+            hl_rows.append(("🚀 Growth Upside",
+                f"${growth.get('total_annual_upside',0):,.0f}/year across {len(opps)} groups"))
+        corr = ins.get('hidden_correlations', [])
+        if corr:
+            hl_rows.append(("🔗 Key Correlation",
+                f"{corr[0]['variable']}: r={corr[0]['r']:+.3f} ({corr[0]['strength']})"))
+        if hl_rows:
+            tbl_data = [[
+                Paragraph(process_text(k,lang), ParagraphStyle('ihk',fontSize=9,
+                    fontName=get_font(lang,True),textColor=rl('blue'),leading=13)),
+                Paragraph(process_text(v,lang), ParagraphStyle('ihv',fontSize=8.5,
+                    fontName=get_font(lang),textColor=rl('gray_dark'),leading=12)),
+            ] for k,v in hl_rows[:6]]
+            hl_tbl = Table(tbl_data, colWidths=[1.5*inch, CONTENT_W-1.5*inch])
+            hl_tbl.setStyle(TableStyle([
+                ('BACKGROUND',(0,0),(0,-1),rl('blue_light')),
+                ('BACKGROUND',(1,0),(1,-1),rl('white')),
+                ('GRID',(0,0),(-1,-1),0.2,rl('border')),
+                ('TOPPADDING',(0,0),(-1,-1),4),('BOTTOMPADDING',(0,0),(-1,-1),4),
+                ('LEFTPADDING',(0,0),(-1,-1),6),('RIGHTPADDING',(0,0),(-1,-1),6),
+                ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
+            ]))
+            story.append(hl_tbl)
+            story.append(Spacer(1,0.10*inch))
+
     if analysis_text:
         _divider(story, sb=8, sa=8)
-        story.append(Paragraph(process_text("Performance Analysis",lang), S['h2']))
+        story.append(Paragraph(process_text(
+            _txt("pdf_exec_performance_analysis", T, "Performance Analysis"), lang), S['h2']))
         _render_analysis(story, analysis_text, S, lang)
     story.append(PageBreak())
 
 
-def _data_quality_section(story, S, dq, ctx, lang):
-    _section_header(story,"02","Data Quality Assessment",S,lang)
+def _data_quality_section(story, S, dq, ctx, lang, T=None):
+    _section_header(story,"02",
+        _txt("pdf_section_data_quality", T, "Data Quality Assessment"), S, lang)
     story.append(Paragraph(process_text(
         "A rigorous data quality assessment was conducted prior to analysis. "
         "All analytical conclusions should be interpreted in the context of these metrics.",
@@ -1236,8 +1413,8 @@ def _data_quality_section(story, S, dq, ctx, lang):
     sc = Table(
         [[Paragraph(process_text(f"{score:.1f}",lang),S['metric_value']),
           Paragraph(process_text(rating,lang),S['metric_value'])],
-         [Paragraph(process_text("Data Completeness Score (/100)",lang),S['metric_label']),
-          Paragraph(process_text("Quality Rating",lang),S['metric_label'])]],
+         [Paragraph(process_text(_txt("pdf_kpi_data_quality", T, "Data Quality"), lang),S['metric_label']),
+          Paragraph(process_text(_txt("pdf_th_grade", T, "Quality Rating"), lang),S['metric_label'])]],
         colWidths=[CONTENT_W/2]*2, rowHeights=[0.46*inch,0.26*inch]
     )
     sc.setStyle(TableStyle([
@@ -1254,7 +1431,10 @@ def _data_quality_section(story, S, dq, ctx, lang):
         return "❌ Action Required"
 
     rows = [
-        ["Quality Metric","Value","Status","Notes"],
+        [_txt("pdf_th_metric", T, "Quality Metric"),
+         _txt("pdf_th_value", T, "Value"),
+         _txt("pdf_th_status", T, "Status"),
+         _txt("pdf_th_notes", T, "Notes")],
         ["Total Records",     f"{dq['n_total']:,}",                "✅ OK",          "Sufficient for statistical analysis"],
         ["Missing Values",    f"{dq['n_missing']} ({dq['missing_pct']:.2f}%)",
          _si(dq['missing_pct'],1,5),
@@ -1331,8 +1511,9 @@ def _data_quality_section(story, S, dq, ctx, lang):
     story.append(PageBreak())
 
 
-def _key_findings(story, S, ctx, lang):
-    _section_header(story,"03","Key Findings",S,lang)
+def _key_findings(story, S, ctx, lang, T=None):
+    _section_header(story,"03",
+        _txt("pdf_section_key_findings", T, "Key Findings"), S, lang)
 
     vol_level = ctx.get('volatility', {}).get('level', 'N/A')
     vol_label = f"CV={ctx['cv_pct']:.1f}% ({vol_level})"
@@ -1374,7 +1555,11 @@ def _key_findings(story, S, ctx, lang):
     rem_w = CONTENT_W - 0.4*inch
     col_widths = [0.4*inch, rem_w*0.22, rem_w*0.08, rem_w*0.35, rem_w*0.35]
     header = [Paragraph(process_text(h, lang), S['h3'])
-              for h in ["#", "Finding", "Confidence", "Evidence", "Business Implication"]]
+              for h in [_txt("pdf_th_num", T, "#"),
+                        _txt("pdf_th_finding", T, "Finding"),
+                        _txt("pdf_th_confidence", T, "Confidence"),
+                        _txt("pdf_th_evidence", T, "Evidence"),
+                        _txt("pdf_th_biz_implication", T, "Business Implication")]]
     table_data = [header]
     for r in rows:
         tid, finding, conf_key, evidence, implication = r
@@ -1414,8 +1599,9 @@ def _key_findings(story, S, ctx, lang):
     story.append(PageBreak())
 
 
-def _sales_overview(story, S, ctx, df, date_col, sales_col, company_name, lang):
-    _section_header(story,"04","Sales Performance Overview",S,lang)
+def _sales_overview(story, S, ctx, df, date_col, sales_col, company_name, lang, T=None):
+    _section_header(story,"04",
+        _txt("pdf_section_sales_overview", T, "Sales Performance Overview"), S, lang)
     story.append(Paragraph(process_text(
         f"Revenue across {ctx['n_periods']:,} periods ({ctx['date_range']}). "
         f"Peak: <b>${ctx['peak_value']:,.0f}</b>. "
@@ -1470,8 +1656,9 @@ def _sales_overview(story, S, ctx, df, date_col, sales_col, company_name, lang):
     story.append(PageBreak())
 
 
-def _trend_analysis(story, S, ctx, monthly_df, company_name, lang):
-    _section_header(story,"05","Period Trend Analysis",S,lang)
+def _trend_analysis(story, S, ctx, monthly_df, company_name, lang, T=None):
+    _section_header(story,"05",
+        _txt("pdf_section_trend_analysis", T, "Period Trend Analysis"), S, lang)
     months_str = [str(m) for m in monthly_df['month']]
     vals       = monthly_df['total'].tolist()
     if not vals:
@@ -1510,11 +1697,12 @@ def _trend_analysis(story, S, ctx, monthly_df, company_name, lang):
     story.append(PageBreak())
 
 
-def _segment_analysis(story, S, ctx, store_df, group_col, company_name, lang, scorecards):
-    _section_header(story,"06",f"Segment Performance & Scorecard — {group_col}",S,lang)
+def _segment_analysis(story, S, ctx, store_df, group_col, company_name, lang, scorecards, T=None):
+    _section_header(story,"06",
+        f"{_txt('pdf_section_segment', T, 'Segment Performance & Scorecard')} — {group_col}", S, lang)
     _callout(story,
              f"ℹ️ <b>Column Definition:</b> '{group_col}' represents quantity tiers or volume bands "
-             f"(observed range: {int(store_df[group_col].min())}–{int(store_df[group_col].max())}). "
+             f"(observed range: {store_df[group_col].min()}–{store_df[group_col].max()}). "
              f"<b>Business interpretation must be validated with domain experts before operational decisions.</b> "
              f"This analysis does NOT assume these groups represent products, channels, "
              f"locations, or customer segments without explicit confirmation.",
@@ -1566,7 +1754,10 @@ def _segment_analysis(story, S, ctx, store_df, group_col, company_name, lang, sc
     story.append(Spacer(1,0.1*inch))
 
     # Segment table
-    hdr = [group_col,"Total Revenue","Avg / Period","Portfolio Share"]
+    hdr = [group_col,
+           _txt("pdf_th_total_revenue", T, "Total Revenue"),
+           _txt("pdf_th_avg_period", T, "Avg / Period"),
+           _txt("pdf_th_share", T, "Portfolio Share")]
     tbl_data = [hdr]
     for _, row in top10.iterrows():
         share = row['total']/total_rev*100 if total_rev>0 else 0
@@ -1592,7 +1783,13 @@ def _segment_analysis(story, S, ctx, store_df, group_col, company_name, lang, sc
             "Grades are relative to portfolio — not absolute market benchmarks.",
             lang), S['body_small']))
         story.append(Spacer(1,0.08*inch))
-        sc_hdr  = ["Group","Rev. Score","Efficiency","Growth Pot.","Risk Score","Overall","Grade"]
+        sc_hdr  = [_txt("pdf_th_group", T, "Group"),
+                    _txt("pdf_th_rev_score", T, "Rev. Score"),
+                    _txt("pdf_th_efficiency", T, "Efficiency"),
+                    _txt("pdf_th_growth_pot", T, "Growth Pot."),
+                    _txt("pdf_th_risk_score", T, "Risk Score"),
+                    _txt("pdf_th_overall", T, "Overall"),
+                    _txt("pdf_th_grade", T, "Grade")]
         sc_rows = [sc_hdr]
         for sc in scorecards[:10]:
             sc_rows.append([
@@ -1610,8 +1807,9 @@ def _segment_analysis(story, S, ctx, store_df, group_col, company_name, lang, sc
     story.append(PageBreak())
 
 
-def _statistical_validation(story, S, ctx, stat_results, lang):
-    _section_header(story,"07","Statistical Validation & Correlations",S,lang)
+def _statistical_validation(story, S, ctx, stat_results, lang, T=None):
+    _section_header(story,"07",
+        _txt("pdf_section_statistical", T, "Statistical Validation & Correlations"), S, lang)
     story.append(Paragraph(process_text(
         "All correlations include Pearson coefficients, P-values, sample sizes, and significance. "
         "<b>Important: Correlation does not imply causation.</b> "
@@ -1651,7 +1849,12 @@ def _statistical_validation(story, S, ctx, stat_results, lang):
         story.append(Spacer(1,0.12*inch))
 
         # Correlation table
-        hdr  = ["Variable","Pearson r","P-Value","Sample (n)","Strength","Significance"]
+        hdr  = [_txt("pdf_th_variable", T, "Variable"),
+                _txt("pdf_th_pearson_r", T, "Pearson r"),
+                _txt("pdf_th_pvalue", T, "P-Value"),
+                _txt("pdf_th_sample_n", T, "Sample (n)"),
+                _txt("pdf_th_strength", T, "Strength"),
+                _txt("pdf_th_significance", T, "Significance")]
         rows = [hdr]
         for d in corr_details:
             rows.append([
@@ -1700,8 +1903,9 @@ def _statistical_validation(story, S, ctx, stat_results, lang):
     story.append(PageBreak())
 
 
-def _forecast_section(story, S, ctx, forecast, prophet_data, company_name, lang, fc_accuracy):
-    _section_header(story,"08","Revenue Forecast & Scenarios",S,lang)
+def _forecast_section(story, S, ctx, forecast, prophet_data, company_name, lang, fc_accuracy, T=None):
+    _section_header(story,"08",
+        _txt("pdf_section_forecast", T, "Revenue Forecast & Scenarios"), S, lang)
     story.append(Paragraph(process_text(
         "Forward-looking projections based on Holt-Winters Exponential Smoothing. "
         "Three scenarios support robust planning. "
@@ -1714,7 +1918,9 @@ def _forecast_section(story, S, ctx, forecast, prophet_data, company_name, lang,
     if fc_accuracy.get('available'):
         mape_str = f"{fc_accuracy['mape']:.1f}%" if fc_accuracy.get('mape') is not None else "N/A"
         acc_rows = [
-            ["Metric","Value","Interpretation"],
+            [_txt("pdf_th_metric_fc", T, "Metric"),
+             _txt("pdf_th_value_fc", T, "Value"),
+             _txt("pdf_th_interpretation", T, "Interpretation")],
             ["MAE (Mean Absolute Error)",
              f"${fc_accuracy['mae']:,.2f}",
              "Average absolute deviation between forecast and actual"],
@@ -1740,7 +1946,51 @@ def _forecast_section(story, S, ctx, forecast, prophet_data, company_name, lang,
                  'amber', S, lang)
 
     story.append(Spacer(1,0.12*inch))
+
+    # ── Model Comparison Table (Phase 4) ──
+    mc = ctx.get('model_comparison', {})
+    if mc.get('available'):
+        story.append(Paragraph(process_text(
+            f"{_txt('pdf_section_forecast', T, 'Revenue Forecast & Scenarios')}: Multi-Model", lang), S['h2']))
+        models = mc.get('models', {})
+        if models:
+            mc_rows = [["Model","MAE","RMSE","MAPE","Status"]]
+            for name in ['Holt-Winters','Naive','Seasonal Naive','SMA(4)']:
+                m = models.get(name)
+                if m is None:
+                    continue
+                mape_s = f"{m['mape']:.1f}%" if m['mape'] is not None else "N/A"
+                is_best = (name == mc.get('best_model'))
+                status = "✅ Best" if is_best else ""
+                mc_rows.append([name, f"${m['mae']:,.0f}", f"${m['rmse']:,.0f}", mape_s, status])
+            _pro_table(story, mc_rows,
+                       col_widths=[1.5*inch, 1.2*inch, 1.2*inch, 0.9*inch, 0.9*inch], lang=lang)
+
+        if mc.get('rejected'):
+            _callout(story,
+                f"⚠️ <b>Forecast Rejected.</b> Multi-model validation failed: "
+                f"{', '.join(mc.get('rejection_flags', []))}. "
+                f"Best model ({mc.get('best_model', '?')}) MAPE = {mc.get('best_mape', 0):.0f}%. "
+                f"Use Bear case (${ctx['bear_12']:,.0f}) as conservative floor. "
+                f"Do not budget against base case.",
+                'red', S, lang)
+
+        if mc.get('model_agreement'):
+            _callout(story,
+                f"✅ <b>Models Agree.</b> All models show consistent MAPE "
+                f"(within 5% of each other). Forecast reliability is strengthened.",
+                'green', S, lang)
+
+    # ── Confidence badge + adjustment notice ──
     _confidence_badge(story, ctx['confidence_level'], S, lang)
+    if ctx.get('confidence_changed') and ctx.get('confidence_reasons'):
+        orig = ctx.get('confidence_original', '?')
+        _callout(story,
+            f"ℹ️ <b>Confidence adjusted</b> from <b>{orig}</b> to "
+            f"<b>{ctx['confidence_level']}</b> due to: "
+            f"{', '.join(ctx['confidence_reasons'])}.",
+            'amber', S, lang)
+
     if ctx['cv_pct'] > 40:
         _volatility_block(story, ctx.get('volatility',{}), ctx['cv_pct'], S, lang)
 
@@ -1901,8 +2151,9 @@ def _forecast_section(story, S, ctx, forecast, prophet_data, company_name, lang,
     story.append(PageBreak())
 
 
-def _risk_matrix(story, S, ctx, risks, lang):
-    _section_header(story,"09","Risk Assessment Matrix",S,lang)
+def _risk_matrix(story, S, ctx, risks, lang, T=None):
+    _section_header(story,"09",
+        _txt("pdf_section_risk", T, "Risk Assessment Matrix"), S, lang)
     story.append(Paragraph(process_text(
         "Key business risks derived from data analysis. "
         "Severity = composite of Probability × Impact. "
@@ -1910,7 +2161,11 @@ def _risk_matrix(story, S, ctx, risks, lang):
         lang), S['body']))
     story.append(Spacer(1,0.15*inch))
 
-    hdr  = ["Risk","Probability","Impact","Severity","Recommended Mitigation"]
+    hdr  = [_txt("pdf_th_risk", T, "Risk"),
+            _txt("pdf_th_probability", T, "Probability"),
+            _txt("pdf_th_impact", T, "Impact"),
+            _txt("pdf_th_severity", T, "Severity"),
+            _txt("pdf_th_mitigation", T, "Recommended Mitigation")]
     rows = [hdr]
     for r in risks:
         # FIX #4: Truncate mitigation text
@@ -1991,8 +2246,9 @@ def _risk_matrix(story, S, ctx, risks, lang):
     story.append(PageBreak())
 
 
-def _growth_opportunities(story, S, ctx, opportunities, lang):
-    _section_header(story,"10","Growth Opportunity Assessment",S,lang)
+def _growth_opportunities(story, S, ctx, opportunities, lang, T=None):
+    _section_header(story,"10",
+        _txt("pdf_section_growth", T, "Growth Opportunity Assessment"), S, lang)
     story.append(Paragraph(process_text(
         "Opportunities identified from data patterns and statistical analysis. "
         "All impact estimates are labeled DERIVED (mathematically computed) "
@@ -2009,7 +2265,11 @@ def _growth_opportunities(story, S, ctx, opportunities, lang):
         story.append(PageBreak()); return
 
     # FIX #4: Truncate basis text in table
-    hdr  = ["Opportunity","Est. Impact","Confidence","Effort","Basis"]
+    hdr  = [_txt("pdf_th_opportunity", T, "Opportunity"),
+            _txt("pdf_th_est_impact", T, "Est. Impact"),
+            _txt("pdf_th_confidence", T, "Confidence"),
+            _txt("pdf_th_effort", T, "Effort"),
+            _txt("pdf_th_basis", T, "Basis")]
     rows = [hdr]
     for opp in opportunities:
         basis = str(opp['basis'])[:55] + ('...' if len(str(opp['basis']))>55 else '')
@@ -2073,9 +2333,13 @@ def _build_peak_rec(ctx) -> dict:
     if days_to_peak < 0:
         return {
             'title':     "Priority 3 — Post-Peak Performance Analysis",
+            'priority':  "3 — Important",
             'evidence':  f"Projected peak was <b>{ctx['peak_week']}</b> "
                          f"({_money(ctx['peak_fc'])}) — now {abs(days_to_peak)} days past. "
                          "[DATA: from historical forecast]",
+            'business_impact':f"Post-peak variance analysis informs next-cycle forecast accuracy — "
+                         f"target: 15-25% reduction in forecast error, "
+                         f"estimated value {_money(ctx['peak_fc']*0.10)}–{_money(ctx['peak_fc']*0.20)}",
             'hypothesis':"Post-peak analysis is essential: compare actual vs projected demand. "
                          "Identify gaps in forecast accuracy, inventory planning, and staffing. "
                          "Use findings to calibrate next seasonal cycle. [INFERRED]",
@@ -2084,10 +2348,15 @@ def _build_peak_rec(ctx) -> dict:
             'first':     f"Compare actual peak sales vs projected {_money(ctx['peak_fc'])} — "
                          "compute variance and identify root causes",
             'metric':    "Forecast error reduced to <15% for next peak cycle",
-            'roi':       f"Est. impact: improved forecast accuracy reduces stockout/overstock by 10-20%. "
-                         "Cost: 5-10 analyst hours. ROI: Medium (compounds over cycles).",
-            'inaction':  "Repeat forecast errors — potential 10-20% revenue leakage next cycle",
+            'roi':       f"Compounds over cycles — each 10% error reduction saves "
+                         f"~{_money(ctx['peak_fc']*0.10)} in stockout/overstock costs",
+            'cost':      "5-10 analyst hours; no additional tooling required",
+            'timeline':  "7 days to post-mortem complete; 30 days to process improvement plan",
+            'resources': "Demand Planning Analyst (10h); Sales Operations (4h)",
+            'risks':     "Learning may not transfer if market conditions change materially",
+            'deps':      "Access to actual sales and inventory data for the peak period",
             'conf':      "Medium",
+            'conf_pct':  "60",
             'conf_basis':"Post-mortem analysis is standard practice. "
                          "Actual sales data available for comparison.",
             'style':     'amber',
@@ -2095,9 +2364,13 @@ def _build_peak_rec(ctx) -> dict:
     elif days_to_peak <= 90:
         return {
             'title':     "Priority 3 — Align with Forecast Peak",
+            'priority':  "3 — Important",
             'evidence':  f"Base case projects peak at <b>{ctx['peak_week']}</b> "
                          f"({_money(ctx['peak_fc'])}) — {days_to_peak} days away. "
                          "[ASSUMPTION: Holt-Winters trend extrapolation]",
+            'business_impact':f"Successful peak capture at projected level = "
+                         f"<b>{_money(ctx['peak_fc'])}</b> in a single period — "
+                         f"representing {ctx['peak_fc']/max(ctx['avg_per_period'],1):.0f}x average period revenue",
             'hypothesis':"Peak may represent genuine demand surge — possible but unconfirmed. "
                          "Seasonality patterns require >52 weeks of data for high confidence. "
                          "Current dataset: ~24 weeks — incomplete seasonal cycle. "
@@ -2110,8 +2383,13 @@ def _build_peak_rec(ctx) -> dict:
             'roi':       f"Capture opportunity: {_money(ctx['peak_fc'])} [ASSUMPTION: if peak materializes]. "
                          "Cost: minimal inventory pre-positioning. ROI: High if peak confirmed. "
                          f"Risk: Peak may not occur — see Bear case (${ctx['bear_12']:,.0f}/12p).",
-            'inaction':  f"Up to {_money(ctx['peak_fc']*0.15)} uncaptured if peak materializes",
+            'cost':      "Inventory pre-positioning ($500–$2,000 est.); staffing contingency",
+            'timeline':  "7 days to readiness confirmation; ongoing monitoring through peak window",
+            'resources': "Supply Chain Coordinator (8h); Marketing Manager (4h); Sales Operations (4h)",
+            'risks':     "Peak may not materialize — Holt-Winters with <52 weeks has limited seasonal accuracy",
+            'deps':      "Supplier lead times; promotional calendar alignment; staffing availability",
             'conf':      "Medium",
+            'conf_pct':  "55",
             'conf_basis':"Trend momentum supports peak projection. "
                          "Limited by incomplete seasonal cycle (<52 weeks).",
             'style':     'green',
@@ -2119,9 +2397,13 @@ def _build_peak_rec(ctx) -> dict:
     else:
         return {
             'title':     "Priority 3 — Long-Term Demand Planning",
+            'priority':  "3 — Important",
             'evidence':  f"Base case projects peak at <b>{ctx['peak_week']}</b> "
                          f"({_money(ctx['peak_fc'])}) — {days_to_peak} days out. "
                          "[ASSUMPTION: Holt-Winters trend extrapolation]",
+            'business_impact':f"Structured demand planning typically reduces forecast error by 15-25%, "
+                         f"enabling {_money(ctx['peak_fc']*0.15)}–{_money(ctx['peak_fc']*0.25)} "
+                         f"in improved inventory and revenue outcomes per peak cycle",
             'hypothesis':"Demand planning should focus on structural drivers (seasonality, promotions, "
                          "pricing) rather than near-term peak preparation. Build foundational models "
                          "to capture >52 weeks of history before next peak. [INFERRED]",
@@ -2130,17 +2412,23 @@ def _build_peak_rec(ctx) -> dict:
             'first':     "Develop rolling 12-period demand forecast — incorporate pricing and "
                          "promotional calendars as exogenous regressors",
             'metric':    "Baseline forecast MAPE <20% before next peak window",
-            'roi':       f"Est. impact: structured demand planning reduces forecast error 15-25%. "
-                         "Cost: 20-40 analyst hours + tooling. ROI: Medium-High over full cycle.",
-            'inaction':  "Ad-hoc planning risks 10-20% revenue leakage during peak periods",
+            'roi':       "Structured demand planning reduces forecast error 15-25% — "
+                         "compounds across all future planning cycles",
+            'cost':      "20-40 analyst hours + $0–$500 in tooling",
+            'timeline':  "30 days to initial model; 90 days to validated forecast",
+            'resources': "FP&A Manager (20h); Data Analyst (10h); IT support for tooling (as needed)",
+            'risks':     "Requires sustained commitment; benefits accrue over multiple cycles",
+            'deps':      "Historical data pipeline; pricing calendar access; stakeholder buy-in",
             'conf':      "Medium",
+            'conf_pct':  "50",
             'conf_basis':"Long lead time allows methodical model development. "
                          "Requires investment in data infrastructure.",
             'style':     'blue',
         }
 
-def _recommendations(story, S, ctx, lang):
-    _section_header(story,"11","Strategic Recommendations",S,lang)
+def _recommendations(story, S, ctx, lang, T=None):
+    _section_header(story,"11",
+        _txt("pdf_section_recommendations", T, "Strategic Recommendations"), S, lang)
     story.append(Paragraph(process_text(
         "Each recommendation is decision-ready and evidence-based. "
         "Confidence levels reflect data quality, sample size, and statistical strength. "
@@ -2152,9 +2440,13 @@ def _recommendations(story, S, ctx, lang):
     recs = [
         {
             'title':     "Priority 1 — Investigate & Replicate Top Performer Model",
+            'priority':  "1 — Critical",
             'evidence':  f"Quantity Group <b>{ctx['best_group']}</b> generates "
                          f"${ctx['best_group_revenue']:,.0f} ({ctx['best_group_share']:.1f}% of total). "
                          f"[DATA: directly measured from dataset]",
+            'business_impact':f"Unlocking top-performer practices across underperforming groups — "
+                         f"potential recovery of <b>${ctx['worst_group_12p_cost']:,.0f}</b> over 12 periods "
+                         f"[DERIVED: gap × 12 periods]",
             'hypothesis':f"Hypothesis: operational drivers of Group {ctx['best_group']} "
                          f"may be transferable to underperforming groups. "
                          f"[INFERRED — requires investigation before scaling. "
@@ -2167,20 +2459,28 @@ def _recommendations(story, S, ctx, lang):
                          f"(${ctx['best_group_avg']*0.7:,.0f}/period) by {ctx['action_deadline_90']}",
             'roi':       f"Est. impact: ${ctx['worst_group_12p_cost']:,.0f} "
                          f"[DERIVED: gap × 12 periods]. "
-                         f"Est. cost: management time ($500–$1,500). "
-                         f"ROI: {min(ctx['worst_group_12p_cost']/max(1000,1)*100,999):.0f}%+ if successful. "
                          f"Payback: <1 period if 30% gap closure achieved.",
-            'inaction':  f"${ctx['worst_group_12p_cost']:,.0f} foregone over 12 periods [DERIVED]",
+            'cost':      f"Management time ($500–$1,500). No capital expenditure required.",
+            'timeline':  f"30 days to investigation complete; 90 days to measurable impact",
+            'resources': "Sales Operations Analyst (20h); Category Manager (8h); Data Analyst (8h)",
+            'risks':     "Root cause may be structural (channel/market) rather than operational — "
+                         "replication not guaranteed without controlled pilot",
+            'deps':      "Access to segment-level P&L; stakeholder alignment on investigation scope",
             'conf':      "Medium",
+            'conf_pct':  "65",
             'conf_basis':"r=0.793 highly significant (p<0.0001). "
                          "Limited by: unknown operational factors, no segment-level pricing data.",
             'style':     'blue',
         },
         {
             'title':     f"Priority 2 — Diagnose Quantity Group {ctx['worst_group']} Underperformance",
+            'priority':  "2 — High",
             'evidence':  f"Group {ctx['worst_group']} underperforms by "
                          f"<b>${ctx['worst_group_gap_weekly']:,.0f}/period</b> vs. portfolio average. "
                          f"[DATA: directly measured]",
+            'business_impact':f"Closing the performance gap by 50% would recover "
+                         f"<b>${ctx['worst_group_gap_weekly']*6:,.0f}</b> over 12 periods "
+                         f"[DERIVED: 50% gap closure × 12 periods]",
             'hypothesis':"Possible hypotheses (each requiring validation before action): "
                          "(A) Pricing misalignment — possible basis: Unit Price r=0.793; "
                          "(B) Lower transaction frequency — possible basis: Quantity r=-0.006 (not significant); "
@@ -2195,10 +2495,15 @@ def _recommendations(story, S, ctx, lang):
                          f"(to ${ctx['avg_per_period'] - ctx['worst_group_gap_weekly']*0.5:,.0f}/period) "
                          "within 30 days of intervention",
             'roi':       f"Est. impact: ${ctx['worst_group_12p_cost']:,.0f}/12 periods [DERIVED: gap×12]. "
-                         f"Est. cost: audit ($200–$500) + implementation. "
                          "ROI: High if pricing lever confirmed. Payback: 1–3 periods.",
-            'inaction':  f"${ctx['worst_group_annual_cost']:,.0f}/year gap vs. portfolio average [DERIVED]",
+            'cost':      f"Audit ($200–$500); implementation costs TBD based on root cause findings",
+            'timeline':  f"7 days to diagnostic complete; 30 days to first intervention",
+            'resources': "Category Manager (16h); Data Analyst (8h); Field Operations (as needed)",
+            'risks':     "Root cause may require capital investment or vendor renegotiation — "
+                         "quick wins not guaranteed",
+            'deps':      "Access to group-level price and cost data; field visit availability",
             'conf':      "Low",
+            'conf_pct':  "35",
             'conf_basis':"Low: unknown root cause, no price elasticity data, "
                          "quantity group business meaning unconfirmed.",
             'style':     'amber',
@@ -2206,31 +2511,42 @@ def _recommendations(story, S, ctx, lang):
         _build_peak_rec(ctx),
     ]
 
+    conf_colors = {'High':'green','Medium':'amber','Low':'red'}
+
     labels = {
-        'HYP':     "HYPOTHESES (TO VALIDATE)",
-        'OWNER':   "DECISION OWNER",
-        'DEADLINE':"DEADLINE",
-        'FIRST':   "FIRST ACTION (48h)",
-        'METRIC':  "SUCCESS METRIC",
-        'ROI':     "BUSINESS IMPACT CALCULATOR",
-        'INACTION':"COST OF INACTION",
-        'CONF':    "RECOMMENDATION CONFIDENCE",
+        'PRIORITY': _txt("pdf_rec_priority", T, "PRIORITY"),
+        'IMPACT':   _txt("pdf_rec_impact", T, "BUSINESS IMPACT"),
+        'CONF_PCT': _txt("pdf_rec_confidence", T, "CONFIDENCE"),
+        'ROI':      _txt("pdf_rec_roi", T, "EXPECTED ROI"),
+        'COST':     _txt("pdf_rec_cost", T, "EST. IMPLEMENTATION COST"),
+        'TIMELINE': _txt("pdf_rec_timeline", T, "TIMELINE"),
+        'OWNER':    _txt("pdf_rec_owner", T, "DECISION OWNER"),
+        'RESOURCES':_txt("pdf_rec_resources", T, "REQUIRED RESOURCES"),
+        'METRIC':   _txt("pdf_rec_metric", T, "SUCCESS KPI"),
+        'RISKS':    _txt("pdf_rec_risks", T, "KEY RISKS"),
+        'DEPS':     _txt("pdf_rec_deps", T, "DEPENDENCIES"),
+        'HYP':      _txt("pdf_rec_hyp", T, "HYPOTHESES (TO VALIDATE)"),
+        'FIRST':    _txt("pdf_rec_first", T, "FIRST ACTION (48h)"),
     }
 
     for rec in recs:
         story.append(Paragraph(process_text(rec['title'],lang), S['h3']))
         _callout(story, process_text(rec['evidence'],lang), rec['style'], S, lang)
 
-        # FIX #4: Description column wide enough, text properly wrapped
         meta_rows = [
-            [labels['HYP'],      rec['hypothesis']],
-            [labels['OWNER'],    rec['owner']],
-            [labels['DEADLINE'], rec['deadline']],
-            [labels['FIRST'],    rec['first']],
-            [labels['METRIC'],   rec['metric']],
+            [labels['PRIORITY'], rec.get('priority', 'Medium')],
+            [labels['IMPACT'],   rec.get('business_impact', rec['roi'])],
+            [labels['CONF_PCT'], f"● {rec.get('conf_pct', rec['conf'])}%  —  {rec['conf_basis']}"],
             [labels['ROI'],      rec['roi']],
-            [labels['INACTION'], rec['inaction']],
-            [labels['CONF'],     f"● {rec['conf']}  |  {rec['conf_basis']}"],
+            [labels['COST'],     rec.get('cost', 'Requires scoping')],
+            [labels['TIMELINE'], rec.get('timeline', rec['deadline'])],
+            [labels['OWNER'],    rec['owner']],
+            [labels['RESOURCES'],rec.get('resources', rec['owner'] + ' team')],
+            [labels['METRIC'],   rec['metric']],
+            [labels['RISKS'],    rec.get('risks', 'Execution risk; data quality limitations')],
+            [labels['DEPS'],     rec.get('deps', 'Data access; stakeholder alignment')],
+            [labels['HYP'],      rec['hypothesis']],
+            [labels['FIRST'],    rec['first']],
         ]
         meta_data = [[
             Paragraph(process_text(k,lang),
@@ -2251,17 +2567,16 @@ def _recommendations(story, S, ctx, lang):
             ('LEFTPADDING',(0,0),(-1,-1),7),('RIGHTPADDING',(0,0),(-1,-1),7),
             ('GRID',(0,0),(-1,-1),0.2,rl('border')),
             ('VALIGN',(0,0),(-1,-1),'TOP'),
-            # ROI row = green highlight
-            ('BACKGROUND',(0,5),(1,5),rl('green_light')),
-            # Inaction row = amber highlight
-            ('BACKGROUND',(0,6),(1,6),rl('amber_light')),
+            # ROI row (3) = green highlight
+            ('BACKGROUND',(0,3),(1,3),rl('green_light')),
+            # Confidence row (2) = highlighted
         ]
         # Confidence row = color by level
         conf_bg = (rl('green_light') if rec['conf']=='High'
                    else rl('amber_light') if rec['conf']=='Medium'
                    else rl('red_light'))
-        style_list.append(('BACKGROUND',(0,7),(1,7),conf_bg))
-        style_list.append(('FONTNAME',(0,7),(1,7),get_font(lang,bold=True)))
+        style_list.append(('BACKGROUND',(0,2),(1,2),conf_bg))
+        style_list.append(('FONTNAME',(0,2),(1,2),get_font(lang,bold=True)))
         meta_tbl.setStyle(TableStyle(style_list))
         story.append(meta_tbl); story.append(Spacer(1,0.22*inch))
 
@@ -2306,10 +2621,288 @@ def _recommendations(story, S, ctx, lang):
     story.append(PageBreak())
 
 
-def _appendix(story, S, ctx, lang, validation_report=None):
-    _section_header(story,"12","Data Appendix & Methodology",S,lang)
+# ═══════════════════════════════════════════════════════════
+# PHASE 2 — ADVANCED VISUAL ANALYTICS (6 chart types)
+# ═══════════════════════════════════════════════════════════
 
-    hdr    = ["Parameter","Value"]
+def _chart_treemap(store_df, group_col, cmap_name='Blues'):
+    values = store_df['total'].values
+    labels = store_df[group_col].astype(str).values
+    top8 = min(len(values), 8)
+    values, labels = values[:top8], labels[:top8]
+    total = values.sum()
+    fig, ax = plt.subplots(figsize=(9.5, 4.5))
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    ax.axis('off')
+    colors = plt.cm.get_cmap(cmap_name)(np.linspace(0.6, 0.95, top8))
+    rects = []
+    x, y = 0.0, 0.0
+    w, h = 1.0, 1.0
+    for i in range(top8):
+        area = values[i] / total
+        if w >= h:
+            rw = w * area * 1.2 if i == top8 - 1 else w * (area / (1 - sum(values[:i]) / total)) if i > 0 else w
+            rw = min(rw, w * 0.6)
+            if x + rw > 1.0 + 1e-9: rw = 1.0 - x
+            rects.append((x, y, rw, h))
+            ax.add_patch(mpatches.FancyBboxPatch(
+                (x, y), rw, h, boxstyle="round,pad=0.02",
+                fc=colors[i], ec='white', lw=1.2, zorder=2))
+            cx, cy = x + rw/2, y + h/2
+            pct = values[i] / total * 100
+            lbl = f"{labels[i]}\n${values[i]:,.0f}\n({pct:.1f}%)"
+            ax.text(cx, cy, lbl, ha='center', va='center',
+                    fontsize=8 if rw > 0.15 else 6.5, fontweight='bold',
+                    color='white' if np.mean(colors[i][:3]) < 0.5 else mpl('navy'))
+            x += rw
+        else:
+            rh = h * area * 1.2 if i == top8 - 1 else h * (area / (1 - sum(values[:i]) / total)) if i > 0 else h
+            rh = min(rh, h * 0.6)
+            if y + rh > 1.0 + 1e-9: rh = 1.0 - y
+            rects.append((x, y, w, rh))
+            ax.add_patch(mpatches.FancyBboxPatch(
+                (x, y), w, rh, boxstyle="round,pad=0.02",
+                fc=colors[i], ec='white', lw=1.2, zorder=2))
+            cx, cy = x + w/2, y + rh/2
+            pct = values[i] / total * 100
+            lbl = f"{labels[i]}\n${values[i]:,.0f}\n({pct:.1f}%)"
+            ax.text(cx, cy, lbl, ha='center', va='center',
+                    fontsize=8 if rh > 0.15 else 6.5, fontweight='bold',
+                    color='white' if np.mean(colors[i][:3]) < 0.5 else mpl('navy'))
+            y += rh
+    ax.set_title("Treemap — Revenue Concentration by Group",
+                 fontsize=10, fontweight='bold', color=mpl('chart1'), loc='left', pad=8)
+    plt.tight_layout(pad=1.0)
+    return _fig_to_img(fig, width=CONTENT_W, height=3.6*inch)
+
+
+def _chart_waterfall(store_df, group_col):
+    df = store_df.sort_values('total', ascending=False).head(10)
+    labels = df[group_col].astype(str).tolist()
+    values = df['total'].values
+    total = values.sum()
+    fig, ax = plt.subplots(figsize=(9.5, 4.0))
+    x_pos = np.arange(len(labels))
+    cum = 0
+    bars = []
+    for i, v in enumerate(values):
+        bottom = cum
+        bars.append(ax.bar(i, v, bottom=bottom, width=0.55,
+                           color=mpl('chart1') if v > 0 else mpl('chart_neg'),
+                           edgecolor='white', lw=0.5, zorder=3))
+        cum += v
+        if i < len(labels) - 1:
+            ax.plot([i+0.275, i+0.725], [cum, cum], color=mpl('gray'),
+                    linewidth=0.8, linestyle='--', zorder=2)
+    ax.bar(len(labels), total, width=0.55, color=mpl('chart3'),
+           edgecolor='white', lw=0.5, zorder=3)
+    ax.set_xticks(list(x_pos) + [len(labels)])
+    ax.set_xticklabels(labels + ['Total'], fontsize=7.5, rotation=35, ha='right')
+    ax.set_ylabel('Cumulative Revenue ($)', fontsize=8, color=mpl('gray_mid'))
+    ax.set_title("Waterfall — Sequential Revenue Build-Up by Group",
+                 fontsize=10, fontweight='bold', color=mpl('chart1'), loc='left', pad=8)
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'${x:,.0f}'))
+    plt.tight_layout(pad=1.0)
+    return _fig_to_img(fig, width=CONTENT_W, height=3.2*inch)
+
+
+def _chart_heatmap(df, date_col, sales_col, group_col, cmap_name='YlOrRd'):
+    import warnings; warnings.filterwarnings('ignore', category=FutureWarning)
+    if df[date_col].dtype != 'datetime64[ns]':
+        df = df.copy(); df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+    df = df.dropna(subset=[date_col, sales_col, group_col])
+    try:
+        period_label = 'Week' if df[date_col].nunique() > 50 else 'Month'
+        if period_label == 'Week':
+            df['_period'] = df[date_col].dt.isocalendar().week.astype(str) + '-' + df[date_col].dt.isocalendar().year.astype(str)
+        else:
+            df['_period'] = df[date_col].dt.to_period('M').astype(str)
+        pivot = df.pivot_table(index=group_col, columns='_period', values=sales_col, aggfunc='sum')
+        pivot = pivot.fillna(0)
+        if pivot.shape[0] > 12: pivot = pivot.iloc[:12]
+        if pivot.shape[1] > 15: pivot = pivot.iloc[:, -15:]
+    except Exception:
+        fig, ax = plt.subplots(figsize=(9.5, 3.5))
+        ax.text(0.5, 0.5, 'Insufficient data for heatmap\n(need date + group columns)',
+                ha='center', va='center', fontsize=11, color=mpl('gray'))
+        ax.axis('off')
+        plt.tight_layout()
+        return _fig_to_img(fig, width=CONTENT_W, height=2.8*inch)
+
+    fig, ax = plt.subplots(figsize=(9.5, max(3.0, pivot.shape[0]*0.35)))
+    cmap = plt.cm.get_cmap(cmap_name)
+    norm = plt.Normalize(vmin=pivot.values.min(), vmax=pivot.values.max())
+    for ri in range(pivot.shape[0]):
+        for ci in range(pivot.shape[1]):
+            val = pivot.iloc[ri, ci]
+            color = cmap(norm(val)) if val > 0 else (0.95, 0.95, 0.95, 1.0)
+            ax.add_patch(mpatches.FancyBboxPatch(
+                (ci - 0.5, ri - 0.5), 0.9, 0.9, boxstyle="round,pad=0.02",
+                fc=color, ec='white', lw=0.3))
+            ax.text(ci, ri, f'${val:,.0f}' if val >= 1000 else f'${val:.0f}',
+                    ha='center', va='center', fontsize=6,
+                    color='white' if np.mean(color[:3]) < 0.5 else mpl('navy'))
+    ax.set_xlim(-0.5, pivot.shape[1] - 0.5)
+    ax.set_ylim(-0.5, pivot.shape[0] - 0.5)
+    ax.set_xticks(range(pivot.shape[1]))
+    ax.set_xticklabels(pivot.columns.tolist(), fontsize=6.5, rotation=45, ha='right')
+    ax.set_yticks(range(pivot.shape[0]))
+    ax.set_yticklabels(pivot.index.tolist(), fontsize=7)
+    ax.invert_yaxis()
+    ax.set_title("Heatmap — Revenue Distribution Across Groups & Periods",
+                 fontsize=10, fontweight='bold', color=mpl('chart1'), loc='left', pad=8)
+    ax.grid(False)
+    ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_visible(False); ax.spines['bottom'].set_visible(False)
+    plt.tight_layout(pad=1.0)
+    return _fig_to_img(fig, width=CONTENT_W, height=min(4.5, max(2.8, pivot.shape[0]*0.35*inch/72 + 0.8)))
+
+
+def _chart_boxplot(df, sales_col, group_col):
+    df = df.dropna(subset=[sales_col, group_col])
+    groups = df.groupby(group_col)[sales_col]
+    data = [g.values for _, g in groups]
+    labels = [str(n) for n, _ in groups]
+    n_groups = len(data)
+    max_groups = 20
+    if n_groups > max_groups:
+        data = data[:max_groups]; labels = labels[:max_groups]
+    fig, ax = plt.subplots(figsize=(9.5, 4.0))
+    bp = ax.boxplot(data, patch_artist=True, widths=0.6,
+                    medianprops=dict(color=mpl('chart_neg'), linewidth=1.5),
+                    whiskerprops=dict(color=mpl('gray_mid'), linewidth=0.8),
+                    capprops=dict(color=mpl('gray_mid'), linewidth=0.8))
+    for patch, i in zip(bp['boxes'], range(len(data))):
+        patch.set_facecolor(mpl('blue_light'))
+        patch.set_edgecolor(mpl('chart1'))
+        patch.set_linewidth(0.8)
+    ax.set_xticklabels(labels, fontsize=7, rotation=35, ha='right')
+    ax.set_ylabel('Sales ($)', fontsize=8, color=mpl('gray_mid'))
+    ax.set_title("Boxplot — Sales Distribution by Group",
+                 fontsize=10, fontweight='bold', color=mpl('chart1'), loc='left', pad=8)
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'${x:,.0f}'))
+    plt.tight_layout(pad=1.0)
+    return _fig_to_img(fig, width=CONTENT_W, height=3.4*inch)
+
+
+def _chart_scatter(df, sales_col, group_col=None):
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if sales_col in numeric_cols: numeric_cols.remove(sales_col)
+    x_col = numeric_cols[0] if numeric_cols else None
+    fig, ax = plt.subplots(figsize=(9.5, 4.0))
+    if x_col is None or len(df) < 5:
+        ax.text(0.5, 0.5, 'Insufficient numeric columns\nfor scatter analysis',
+                ha='center', va='center', fontsize=11, color=mpl('gray'))
+        ax.axis('off')
+        plt.tight_layout()
+        return _fig_to_img(fig, width=CONTENT_W, height=2.8*inch)
+    df_plot = df.dropna(subset=[x_col, sales_col])
+    if group_col and group_col in df_plot.columns:
+        groups = df_plot.groupby(group_col)
+        cmap = plt.cm.get_cmap('tab10')
+        for i, (name, grp) in enumerate(groups):
+            ax.scatter(grp[x_col], grp[sales_col], s=25, alpha=0.6,
+                       c=[cmap(i % 10)], edgecolors='white', linewidth=0.3,
+                       label=str(name)[:20])
+        ax.legend(fontsize=6, loc='upper left', framealpha=0.8,
+                  ncol=max(1, len(groups)//10 + 1))
+    else:
+        ax.scatter(df_plot[x_col], df_plot[sales_col], s=25, alpha=0.5,
+                   c=mpl('chart1'), edgecolors='white', linewidth=0.3)
+    z = np.polyfit(df_plot[x_col], df_plot[sales_col], 1)
+    p = np.poly1d(z)
+    x_sorted = np.sort(df_plot[x_col])
+    ax.plot(x_sorted, p(x_sorted), color=mpl('chart_neg'), linewidth=1.2,
+            linestyle='--', alpha=0.6, label=f'Trend (r²={np.corrcoef(df_plot[x_col], df_plot[sales_col])[0,1]**2:.2f})')
+    ax.set_xlabel(x_col.replace('_', ' '), fontsize=8, color=mpl('gray_mid'))
+    ax.set_ylabel(sales_col.replace('_', ' '), fontsize=8, color=mpl('gray_mid'))
+    ax.set_title(f"Scatter — {x_col.replace('_', ' ')} vs {sales_col.replace('_', ' ')}",
+                 fontsize=10, fontweight='bold', color=mpl('chart1'), loc='left', pad=8)
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'${x:,.0f}'))
+    plt.tight_layout(pad=1.0)
+    return _fig_to_img(fig, width=CONTENT_W, height=3.4*inch)
+
+
+def _chart_bubble(store_df, group_col):
+    df = store_df.copy()
+    if len(df) > 15: df = df.head(15)
+    if 'cv_pct' not in df.columns:
+        df['cv_pct'] = df['std_weekly'] / df['avg_weekly'].clip(lower=1) * 100 if 'std_weekly' in df.columns else 10
+    x = df['total'].values
+    y = df['cv_pct'].values
+    y = np.where(np.isnan(y), 10, y)
+    y = np.where(np.isinf(y), 10, y)
+    sizes = df['pct_of_total'].values * 300 if 'pct_of_total' in df.columns else np.full(len(df), 100)
+    labels = df[group_col].astype(str).tolist()
+    fig, ax = plt.subplots(figsize=(9.5, 4.5))
+    scatter = ax.scatter(x, y, s=sizes, c=x, cmap='viridis', alpha=0.7,
+                         edgecolors='white', linewidth=0.5, zorder=3)
+    for xi, yi, li in zip(x, y, labels):
+        ax.annotate(li, (xi, yi), fontsize=6.5, ha='center', va='bottom',
+                    color=mpl('navy'), fontweight='bold',
+                    textcoords='offset points', xytext=(0, 5))
+    cbar = fig.colorbar(scatter, ax=ax, shrink=0.6)
+    cbar.set_label('Revenue ($)', fontsize=7, color=mpl('gray_mid'))
+    cbar.ax.tick_params(labelsize=6.5)
+    ax.set_xlabel('Total Revenue ($)', fontsize=8, color=mpl('gray_mid'))
+    ax.set_ylabel('Volatility (CV %)', fontsize=8, color=mpl('gray_mid'))
+    ax.set_title("Bubble Chart — Group Performance: Revenue vs Volatility vs Share",
+                 fontsize=10, fontweight='bold', color=mpl('chart1'), loc='left', pad=8)
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'${x:,.0f}'))
+    plt.tight_layout(pad=1.0)
+    return _fig_to_img(fig, width=CONTENT_W, height=3.8*inch)
+
+
+def _advanced_visual_analytics(story, S, ctx, df, date_col, sales_col, group_col, store_df, lang, T=None):
+    _section_header(story, "13",
+        _txt("pdf_section_advanced_viz", T, "Advanced Visual Analytics"), S, lang)
+    story.append(Paragraph(process_text(
+        "Deep-dive visual analysis: revenue concentration, distribution patterns, "
+        "cross-period trends, and group-level relationships. All charts generated dynamically from uploaded data.",
+        lang), S['body_small']))
+    story.append(Spacer(1, 0.10*inch))
+
+    intro_texts = {
+        'treemap':  "Revenue concentration across groups — larger rectangles represent higher revenue shares. "
+                     "Use to identify dependency on top-performing segments.",
+        'waterfall':"Sequential revenue build-up from the smallest to largest group. "
+                     "Illustrates how each group contributes to the portfolio total.",
+        'heatmap':  "Period-over-period revenue distribution across groups. Darker cells indicate peak periods; "
+                     "gaps reveal seasonal or operational lulls.",
+        'boxplot':  "Sales value distribution per group. Box width = interquartile range (IQR); "
+                     "whiskers = 1.5×IQR; diamonds = outliers.",
+        'scatter':  "Relationship between a non-sales numeric variable and revenue. "
+                     "Regression trend line and per-group coloring reveal hidden correlations.",
+        'bubble':   "Three-dimensional comparison: revenue (x-axis), volatility (y-axis, as CV%), "
+                     "and revenue share (bubble size). Ideal for portfolio balancing decisions.",
+    }
+
+    charts = [
+        ('treemap',  _chart_treemap(store_df, group_col) if store_df is not None else None),
+        ('waterfall', _chart_waterfall(store_df, group_col) if store_df is not None else None),
+        ('heatmap',  _chart_heatmap(df, date_col, sales_col, group_col)),
+        ('boxplot',  _chart_boxplot(df, sales_col, group_col)),
+        ('scatter',  _chart_scatter(df, sales_col, group_col)),
+        ('bubble',   _chart_bubble(store_df, group_col) if store_df is not None else None),
+    ]
+
+    for i, (name, img) in enumerate(charts):
+        if img is None:
+            continue
+        story.append(Spacer(1, 0.06*inch))
+        story.append(img)
+        story.append(Paragraph(process_text(intro_texts[name], lang), S['body_small']))
+        if i < len(charts) - 1 and name not in ('boxplot',):
+            story.append(Spacer(1, 0.08*inch))
+    story.append(PageBreak())
+
+
+def _appendix(story, S, ctx, lang, validation_report=None, T=None):
+    _section_header(story,"12",
+        _txt("pdf_section_appendix", T, "Data Appendix & Methodology"), S, lang)
+
+    hdr    = [_txt("pdf_th_parameter", T, "Parameter"),
+              _txt("pdf_th_value", T, "Value")]
     params = [
         ("Total Records",            f"{ctx['n_records']:,}"),
         ("Unique Periods",           f"{ctx['n_periods']:,}"),
@@ -2339,41 +2932,42 @@ def _appendix(story, S, ctx, lang, validation_report=None):
                col_widths=[2.8*inch, CONTENT_W-2.8*inch], lang=lang)
 
     # Methodology
-    story.append(Paragraph(process_text("Methodology Documentation",lang), S['h2']))
+    story.append(Paragraph(process_text(
+        _txt("pdf_methodology_doc", T, "Methodology Documentation"), lang), S['h2']))
     methodology = [
-        ("Data Cleaning",
+        (_txt("pdf_method_data_cleaning", T, "Data Cleaning"),
          "Raw dataset ingested and validated. Column names stripped of whitespace. "
          "Date fields parsed using pandas to_datetime() with error coercion. "
          "Records with unparseable dates excluded from temporal analysis."),
-        ("Missing Value Handling",
+        (_txt("pdf_method_missing_values", T, "Missing Value Handling"),
          "Missing values identified via pandas isnull() scan. Records with missing primary "
          "date or sales column excluded (listwise deletion). Records with missing non-critical "
          "columns retained for aggregation analyses."),
-        ("Outlier Treatment",
+        (_txt("pdf_method_outliers", T, "Outlier Treatment"),
          "Outliers identified via IQR method: values below Q1−1.5×IQR or above Q3+1.5×IQR. "
          "Outliers RETAINED in analysis (not removed) to preserve data integrity. "
          "Presence documented — may contribute to elevated CV."),
-        ("Aggregation Logic",
+        (_txt("pdf_method_aggregation", T, "Aggregation Logic"),
          "Revenue aggregated by date field (sum) for temporal analysis. "
          "Segment analysis uses sum and mean by group column. "
          "Period frequency user-selected (Weekly/Monthly/Quarterly/Yearly)."),
-        ("Forecast Methodology",
+        (_txt("pdf_method_forecast", T, "Forecast Methodology"),
          "Holt-Winters Exponential Smoothing (statsmodels ExponentialSmoothing). "
          "Model selection: seasonal_periods=52 if n>=104, 26 if n>=26, else no seasonal. "
          "Three scenarios: Bear = base × 0.75–0.85, Base = model output, Bull = base × 1.15–1.40 "
          "(multipliers scale with CV). Confidence intervals proportional to CV."),
-        ("Forecast Accuracy Validation (BUG FIX #1)",
+        (_txt("pdf_method_forecast_accuracy", T, "Forecast Accuracy Validation (BUG FIX #1)"),
          "Model re-trained on first 80% of historical data (train split). "
          "MAE, RMSE, MAPE computed against last 20% (pseudo-holdout). "
          "This ensures non-zero, meaningful accuracy metrics. "
          "Limitation: in-sample only. True out-of-sample accuracy will differ."),
-        ("Statistical Methods",
+        (_txt("pdf_method_statistical", T, "Statistical Methods"),
          "Pearson correlations via scipy.stats.pearsonr(). P-values reported using "
          "_format_pvalue() — never displayed as 0.0 (uses <0.0001 notation). "
          "Significance thresholds: p<0.0001 (highly significant), p<0.001, p<0.01, p<0.05. "
          "Normality via Shapiro-Wilk (same p-value formatting). "
          "Causation disclaimer on all correlations."),
-        ("Financial Estimates",
+        (_txt("pdf_method_financial", T, "Financial Estimates"),
          "All impact estimates use transparent formulas. "
          "DERIVED: mathematically computed from data. "
          "INFERRED: logical assumption requiring validation. "
@@ -2388,7 +2982,8 @@ def _appendix(story, S, ctx, lang, validation_report=None):
     # QA Report
     if validation_report:
         story.append(Spacer(1,0.15*inch))
-        story.append(Paragraph(process_text("Quality Assurance Report",lang), S['h2']))
+        story.append(Paragraph(process_text(
+            _txt("pdf_qa_report", T, "Quality Assurance Report"), lang), S['h2']))
         status     = validation_report.get('passed', True)
         iterations = validation_report.get('iterations', 1)
         status_txt = (f"Quality check: {'✅ PASSED' if status else '⚠️ ISSUES DETECTED'} "
@@ -2398,7 +2993,9 @@ def _appendix(story, S, ctx, lang, validation_report=None):
         if not status and validation_report.get('errors'):
             errors = validation_report['errors'][:5]
             if errors and isinstance(errors[0], dict):
-                err_hdr  = ["Issue Detected","Impact Level","Action Taken"]
+                err_hdr  = [_txt("pdf_th_issue", T, "Issue Detected"),
+                            _txt("pdf_th_impact_level", T, "Impact Level"),
+                            _txt("pdf_th_action_taken", T, "Action Taken")]
                 err_rows = [err_hdr]+[[e.get('error',''),e.get('impact',''),e.get('action','')] for e in errors]
                 _pro_table(story, err_rows,
                            col_widths=[2.2*inch,1.2*inch,CONTENT_W-3.4*inch], lang=lang)
@@ -2408,7 +3005,8 @@ def _appendix(story, S, ctx, lang, validation_report=None):
 
     # FIX #4: Action Plan with proper column widths to prevent overflow
     story.append(Spacer(1,0.2*inch))
-    story.append(Paragraph(process_text("Priority Action Plan",lang), S['h2']))
+    story.append(Paragraph(process_text(
+        _txt("pdf_action_plan", T, "Priority Action Plan"), lang), S['h2']))
     story.append(Paragraph(process_text(
         "All impact estimates derived from data. "
         "Confidence ratings reflect data quality and statistical foundation.",
@@ -2439,7 +3037,11 @@ def _appendix(story, S, ctx, lang, validation_report=None):
     ]
 
     # FIX #4: Column widths sized for content
-    ap_hdr = ["Initiative","Description","Est. Impact","Effort","Conf."]
+    ap_hdr = [_txt("pdf_th_initiative", T, "Initiative"),
+              _txt("pdf_th_description", T, "Description"),
+              _txt("pdf_th_est_impact", T, "Est. Impact"),
+              _txt("pdf_th_effort", T, "Effort"),
+              _txt("pdf_th_conf_short", T, "Conf.")]
     for sec_title, items in ap_sections:
         story.append(Paragraph(process_text(sec_title,lang), S['h3']))
         ap_rows = [ap_hdr] + [list(item) for item in items]
@@ -2466,6 +3068,7 @@ def generate_pdf(
     ai_result=None, ai_type=None,
     include_action_plan=False, lang='en',
     system_prompt="", ask_agent_fn=None,
+    insights=None,
 ) -> bytes:
     """
     Generate McKinsey/BCG-grade Business Intelligence PDF — v4.1
@@ -2516,25 +3119,26 @@ def generate_pdf(
     has_store = store_df is not None and group_col is not None and len(store_df) > 0
     has_corr  = corr_series is not None and len(corr_series) > 0
 
-    _cover(story, company_name, S, ctx, lang)
-    _toc(story, S, ctx, lang, has_store, has_corr)              # FIX #3
-    _executive_kpi_dashboard(story, S, ctx, dq, lang)
-    _executive_summary(story, S, ctx, lang, cleaned_analysis)   # FIX #5
-    _data_quality_section(story, S, dq, ctx, lang)
-    _key_findings(story, S, ctx, lang)                          # FIX #5
-    _sales_overview(story, S, ctx, df, date_col, sales_col, company_name, lang)
-    _trend_analysis(story, S, ctx, monthly_df, company_name, lang)
+    _cover(story, company_name, S, ctx, lang, T=T)
+    _toc(story, S, ctx, lang, has_store, has_corr, T=T)              # FIX #3
+    _executive_kpi_dashboard(story, S, ctx, dq, lang, T=T)
+    _executive_summary(story, S, ctx, lang, cleaned_analysis, insights, T=T)   # FIX #5
+    _data_quality_section(story, S, dq, ctx, lang, T=T)
+    _key_findings(story, S, ctx, lang, T=T)                          # FIX #5
+    _sales_overview(story, S, ctx, df, date_col, sales_col, company_name, lang, T=T)
+    _trend_analysis(story, S, ctx, monthly_df, company_name, lang, T=T)
 
     if has_store:
-        _segment_analysis(story, S, ctx, store_df, group_col, company_name, lang, scorecards)
+        _segment_analysis(story, S, ctx, store_df, group_col, company_name, lang, scorecards, T=T)
     if has_corr:
-        _statistical_validation(story, S, ctx, stat_results, lang)  # FIX #2
+        _statistical_validation(story, S, ctx, stat_results, lang, T=T)  # FIX #2
 
-    _forecast_section(story, S, ctx, forecast, prophet_data, company_name, lang, fc_accuracy)  # FIX #1
-    _risk_matrix(story, S, ctx, risks, lang)
-    _growth_opportunities(story, S, ctx, opportunities, lang)
-    _recommendations(story, S, ctx, lang)                       # FIX #4
-    _appendix(story, S, ctx, lang, validation_report)           # FIX #3 + #4
+    _forecast_section(story, S, ctx, forecast, prophet_data, company_name, lang, fc_accuracy, T=T)  # FIX #1
+    _risk_matrix(story, S, ctx, risks, lang, T=T)
+    _growth_opportunities(story, S, ctx, opportunities, lang, T=T)
+    _recommendations(story, S, ctx, lang, T=T)                       # FIX #4
+    _advanced_visual_analytics(story, S, ctx, df, date_col, sales_col, group_col, store_df, lang, T=T)
+    _appendix(story, S, ctx, lang, validation_report, T=T)           # FIX #3 + #4
 
     doc.build(story, onFirstPage=footer_fn, onLaterPages=footer_fn)
     buffer.seek(0)

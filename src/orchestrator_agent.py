@@ -131,8 +131,11 @@ class SharedContext:
     # ── مخرجات VisualAgent ──────────────────────
     chart_paths: List[str] = field(default_factory=list)
 
-    # ── مخرجات ReportAgent ──────────────────────
+    # ── مخرجات AIAnalysisAgent ──────────────────
     ai_analysis_text: Optional[str] = None
+    insights: dict = field(default_factory=dict)
+
+    # ── مخرجات ReportAgent ──────────────────────
     pdf_bytes: Optional[bytes] = None
     pdf_path: Optional[str] = None
 
@@ -561,6 +564,15 @@ class AIAnalysisAgent(BaseAgent):
 
     def _execute(self, ctx: SharedContext) -> SharedContext:
         log.info("AIAnalystAgent: calling LLM for narrative analysis...")
+
+        from insight_engine import compute_insights
+        ctx.insights = compute_insights(
+            df=ctx.df, sales_col=ctx.sales_col, date_col=ctx.date_col,
+            group_col=ctx.group_col, store_df=ctx.store_df,
+            monthly_df=ctx.monthly_df, corr_series=ctx.corr_series,
+            kpi_data=ctx.kpi_data,
+        )
+
         system_prompt = self._build_system_prompt(ctx)
         user_prompt   = self._build_user_prompt(ctx)
 
@@ -739,10 +751,39 @@ ANTI-HALLUCINATION PROTOCOL — MANDATORY
 - اذكر دائماً النطاق [Bear–Base–Bull] وليس رقماً واحداً فقط.
 - مثال صحيح: "التوقع الأساسي ${next_12:,.0f} لـ12 فترة [{fc_conf} confidence]،
   مع نطاق Bear/Bull ${bear_12:,.0f}–${bull_12:,.0f}."
-"""
+
+=== INSIGHT ENGINE — مخرجات التحليل الآلي (للتدعيم فقط) ===
+{self._build_insight_section(ctx)}"""
 
     def _build_user_prompt(self, ctx: SharedContext) -> str:
-        """بناء طلب المستخدم بناءً على نوع التحليل"""
+        """بناء طلب المستخدم — الآن مع 10 فئات تحليل منظمة"""
+        base_insight_section = (
+            "\n\n=== مطلوب: تغطية فئات التحليل الآلي الـ10 في إجابتك ===\n"
+            "قسّم تحليلك إلى الأقسام التالية (استخدم العناوين بالعريض ###):\n\n"
+            "### 1. Anomalies & Spikes\n"
+            "  - هل توجد قمم أو انخفاضات غير عادية؟ صف متى ولماذا.\n\n"
+            "### 2. Seasonality Patterns\n"
+            "  - هل توجد أنماط موسمية واضحة؟ ما أفضل الشهور وأسوأها؟\n\n"
+            "### 3. Outliers\n"
+            "  - هل توجد قيم شاذة تؤثر على المتوسطات؟\n\n"
+            "### 4. Segment Clusters\n"
+            "  - كيف تتوزع المجموعات أدائياً؟ هل توجد عناقيد طبيعية (ممتاز/متوسط/ضعيف)؟\n\n"
+            "### 5. Revenue Drivers\n"
+            "  - ما أقوى العوامل المرتبطة بالإيراد؟ (استخدم قسم الارتباطات)\n\n"
+            "### 6. Concentration Risk\n"
+            "  - هل الإيراد مركّز في مجموعة قليلة؟ ما درجة الخطورة؟\n\n"
+            "### 7. Revenue Leakage\n"
+            "  - هل توجد مجموعات في انخفاض مستمر؟ ما حجم التسريب؟\n\n"
+            "### 8. Unexpected Correlations\n"
+            "  - هل توجد ارتباطات غير متوقعة تستحق الاستكشاف؟\n\n"
+            "### 9. Declining Segments\n"
+            "  - هل هناك قطاعات تتراجع وتحتاج تدخلاً؟\n\n"
+            "### 10. Growth Opportunities\n"
+            "  - أين توجد أكبر فرص النمو غير المستغلة؟ مع العائد المالي المقدر.\n\n"
+            "القاعدة الذهبية: كل ادعاء يجب أن يكون مدعوماً برقم [DATA] أو [DERIVED] من قسم "
+            "INSIGHT ENGINE أو بيانات الأداء أعلاه. استخدم [INFERRED] للاستنتاجات المنطقية فقط."
+        )
+
         prompts = {
             "executive_summary": (
                 "اكتب ملخصاً تنفيذياً شاملاً يتضمن:\n"
@@ -750,8 +791,8 @@ ANTI-HALLUCINATION PROTOCOL — MANDATORY
                 "2. أبرز 3 نتائج مع تأثيرها المالي\n"
                 "3. أهم 3 قرارات عاجلة مع موعد كل منها\n"
                 "4. توقعات 12 فترة مع نطاق Bear/Base/Bull\n"
-                "5. الفرص والمخاطر الرئيسية\n\n"
-                "القاعدة الذهبية: كل ادعاء يجب أن يكون مدعوماً برقم من البيانات."
+                "5. الفرص والمخاطر الرئيسية"
+                + base_insight_section
             ),
             "performance_analysis": (
                 "قدّم تحليل أداء تفصيلياً يشمل:\n"
@@ -760,6 +801,7 @@ ANTI-HALLUCINATION PROTOCOL — MANDATORY
                 "3. الأنماط الموسمية وفرص استغلالها\n"
                 "4. تأثير العوامل الخارجية (الارتباطات)\n"
                 "5. بطاقة مؤشرات الأداء KPI"
+                + base_insight_section
             ),
             "problem_detection": (
                 "حدد جميع المشاكل بدقة جراحية:\n"
@@ -768,6 +810,7 @@ ANTI-HALLUCINATION PROTOCOL — MANDATORY
                 "3. ضعف أداء مزمن مع قرار: استثمر/أعد هيكلة/أغلق\n"
                 "4. عوامل خطر خفية\n"
                 "5. قائمة أولويات الإصلاح مع التكلفة والعائد"
+                + base_insight_section
             ),
             "profit_improvement": (
                 "قدّم خطة تحسين أرباح ملموسة:\n"
@@ -776,9 +819,82 @@ ANTI-HALLUCINATION PROTOCOL — MANDATORY
                 "3. أكبر 3 فرص إيراد غير مستغلة\n"
                 "4. ما يجب التوقف عنه (مدمرات القيمة)\n"
                 "5. توقع إيرادات 12 فترة بسيناريوهات ثلاثة"
+                + base_insight_section
             ),
         }
         return prompts.get(self.analysis_type, prompts["executive_summary"])
+
+    def _build_insight_section(self, ctx: SharedContext) -> str:
+        """Build structured insight data section for system prompt injection."""
+        ins = ctx.insights or {}
+        lines = []
+
+        # ── Anomalies ──
+        anomalies = ins.get('anomalies', [])
+        if anomalies:
+            lines.append("--- ANOMALIES (Z-score detected) ---")
+            for a in anomalies[:5]:
+                lines.append(
+                    f"- [{a['direction']}] {a['date']}: ${a['value']:,.0f} "
+                    f"(Z={a['z_score']:.1f}, {a['pct_vs_mean']:+.1f}% vs mean)  [DATA]"
+                )
+
+        # ── Seasonality ──
+        seas = ins.get('seasonality', {})
+        if seas.get('has_seasonality'):
+            lines.append("--- SEASONALITY ---")
+            lines.append(f"  Seasonal swing: {seas.get('seasonal_swing_pct', 0):+.1f}%  [DATA]")
+            for p in seas.get('peak_months', []):
+                lines.append(f"  Peak month {p['month']}: +{p['deviation_pct']:+.1f}% vs avg  [DATA]")
+            for t in seas.get('trough_months', []):
+                lines.append(f"  Trough month {t['month']}: {t['deviation_pct']:+.1f}% vs avg  [DATA]")
+
+        # ── Concentration Risk ──
+        conc = ins.get('concentration_risk', {})
+        if conc.get('risk_level') != 'UNKNOWN':
+            lines.append("--- REVENUE CONCENTRATION RISK ---")
+            lines.append(f"  Risk level: {conc.get('risk_level')}  [DATA]")
+            lines.append(f"  {conc.get('summary', '')}  [DATA]")
+
+        # ── Revenue Leakage ──
+        leakage = ins.get('revenue_leakage', [])
+        if leakage:
+            lines.append("--- REVENUE LEAKAGE (Declining groups) ---")
+            for l in leakage[:5]:
+                lines.append(
+                    f"- Group {l['group']}: {l['decline_pct']:+.1f}% decline "
+                    f"(severity: {l['severity']})  [DATA]"
+                )
+
+        # ── Growth Opportunities ──
+        growth = ins.get('growth_opportunities', {})
+        opps = growth.get('opportunities', [])
+        if opps:
+            lines.append("--- GROWTH OPPORTUNITIES ---")
+            lines.append(f"  Total annual upside: ${growth.get('total_annual_upside', 0):,.0f}  [DERIVED]")
+            for o in opps[:5]:
+                lines.append(
+                    f"- Group {o['group']}: {o['gap_vs_best_pct']:.0f}% gap → "
+                    f"${o['annual_upside']:,.0f}/year upside  [DERIVED]"
+                )
+
+        # ── Declining Segments ──
+        decl = ins.get('declining_segments', [])
+        if decl:
+            lines.append("--- DECLINING SEGMENTS ---")
+            for d in decl:
+                lines.append(f"- {d['type']}: {d['decline_pct']:+.1f}%  [DATA]")
+
+        # ── Hidden Correlations ──
+        corr = ins.get('hidden_correlations', [])
+        if corr:
+            lines.append("--- NOTEWORTHY CORRELATIONS ---")
+            for c in corr[:5]:
+                lines.append(
+                    f"- {c['variable']}: r={c['r']:+.3f} ({c['strength']}, {c['direction']})  [DATA]"
+                )
+
+        return "\n".join(lines) if lines else "N/A — insufficient data for automated insights."
 
 
 # ════════════════════════════════════════════════
@@ -821,6 +937,7 @@ class ReportAgent(BaseAgent):
             T                = T,
             ai_result        = ctx.ai_analysis_text,
             ai_type          = "executive_summary",
+            insights         = ctx.insights,
             lang             = ctx.lang,
             system_prompt    = "",
             ask_agent_fn     = None,

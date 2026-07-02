@@ -198,8 +198,8 @@ def render_sidebar():
         st.divider()
 
         # ── إعداد الأعمدة (تظهر فقط بعد رفع الملف) ──
-        date_col  = "Date"
-        sales_col = "Weekly_Sales"
+        date_col  = T("ui_date_default")
+        sales_col = T("ui_sales_default")
 
         if uploaded:
             st.markdown(f"### {T('map_columns')}")
@@ -235,18 +235,18 @@ def render_sidebar():
         st.divider()
 
         # ── إعدادات متقدمة ───────────────────────
-        with st.expander("⚙️ Advanced Settings", expanded=False):
-            forecast_weeks = st.slider("Forecast Periods", 4, 26, 12)
+        with st.expander(T("ui_advanced_settings"), expanded=False):
+            forecast_weeks = st.slider(T("ui_forecast_periods"), 4, 26, 12)
             analysis_type_label = st.selectbox(
-                "Analysis Type",
-                ["Executive Summary", "Performance Analysis",
-                 "Problem Detection", "Profit Improvement"],
+                T("ui_analysis_type"),
+                [T("ui_analysis_exec_summary"), T("ui_analysis_perf_analysis"),
+                 T("ui_analysis_prob_detect"), T("ui_analysis_profit_improve")],
             )
             analysis_type_map = {
-                "Executive Summary":     "executive_summary",
-                "Performance Analysis":  "performance_analysis",
-                "Problem Detection":     "problem_detection",
-                "Profit Improvement":    "profit_improvement",
+                T("ui_analysis_exec_summary"):   "executive_summary",
+                T("ui_analysis_perf_analysis"):  "performance_analysis",
+                T("ui_analysis_prob_detect"):    "problem_detection",
+                T("ui_analysis_profit_improve"): "profit_improvement",
             }
             analysis_type = analysis_type_map[analysis_type_label]
         st.divider()
@@ -282,7 +282,7 @@ def run_pipeline(uploaded, company_name, date_col, sales_col,
         else:
             df = pd.read_excel(uploaded)
     except Exception as e:
-        st.error(f"❌ فشل قراءة الملف: {e}")
+        st.error(T("ui_file_read_error").format(error=e))
         return None
 
     # إنشاء الـ Orchestrator
@@ -297,7 +297,7 @@ def run_pipeline(uploaded, company_name, date_col, sales_col,
 
     # شريط التقدم
     st.markdown("---")
-    st.markdown("#### ⚙️ Running Pipeline...")
+    st.markdown(f"#### {T('ui_running_pipeline')}")
     progress_bar = st.progress(0)
 
     # تشغيل الـ pipeline
@@ -316,7 +316,7 @@ def run_pipeline(uploaded, company_name, date_col, sales_col,
 # ════════════════════════════════════════════════
 def render_pipeline_status(ctx):
     """عرض حالة كل agent بعد التشغيل"""
-    with st.expander("🔍 Pipeline Status", expanded=False):
+    with st.expander(T("ui_pipeline_status"), expanded=False):
         cols = st.columns(len(ctx.agent_statuses) or 1)
         for i, s in enumerate(ctx.agent_statuses):
             with cols[i % len(cols)]:
@@ -334,13 +334,13 @@ def render_pipeline_status(ctx):
 
         # تحذيرات
         if ctx.warnings:
-            st.markdown("**⚠️ Warnings:**")
+            st.markdown(f"**{T('ui_warnings_heading')}**")
             for w in ctx.warnings:
                 st.warning(w, icon="⚠️")
 
         # أخطاء
         if ctx.errors:
-            st.markdown("**❌ Errors:**")
+            st.markdown(f"**{T('ui_errors_heading')}**")
             for e in ctx.errors:
                 st.error(e)
 
@@ -357,22 +357,25 @@ def render_kpi_cards(ctx):
     avg     = summary.get('avg_weekly_sales', 0)
     peak    = summary.get('max_single_week', 0)
     fc12    = fc.get('next_12_weeks', 0)
-    conf    = fc.get('confidence_level', 'Medium')
+    conf    = fc.get('confidence_level', T("ui_conf_medium"))
+    conf_map = {"High": T("ui_conf_high"), "Medium": T("ui_conf_medium"), "Low": T("ui_conf_low")}
+    conf_display = conf_map.get(conf, conf)
     conf_icon = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(conf, "🟡")
 
     def money(v):
-        if v >= 1e9:  return f"${v/1e9:.1f}B"
-        if v >= 1e6:  return f"${v/1e6:.1f}M"
-        if v >= 1e3:  return f"${v/1e3:.0f}K"
-        return f"${v:.0f}"
+        s = T("ui_currency_sym")
+        if v >= 1e9:  return f"{s}{v/1e9:.1f}{T('ui_currency_suffix_b')}"
+        if v >= 1e6:  return f"{s}{v/1e6:.1f}{T('ui_currency_suffix_m')}"
+        if v >= 1e3:  return f"{s}{v/1e3:.0f}{T('ui_currency_suffix_k')}"
+        return f"{s}{v:.0f}"
 
     c1, c2, c3, c4, c5 = st.columns(5)
     cards = [
         (c1, money(total),   T("total_sales"),   "#7C9EFF"),
         (c2, money(avg),     T("avg_period"),     "#4ADE80"),
         (c3, money(peak),    T("best_period"),    "#FBBF24"),
-        (c4, money(fc12),    "12-Period Forecast","#A78BFA"),
-        (c5, f"{conf_icon} {conf}", "Forecast Confidence", "#60A5FA"),
+        (c4, money(fc12),    T("pdf_kpi_12p_forecast_short"),"#A78BFA"),
+        (c5, f"{conf_icon} {conf_display}", T("pdf_kpi_forecast_confidence"), "#60A5FA"),
     ]
     for col, val, label, color in cards:
         with col:
@@ -393,14 +396,14 @@ def render_charts(ctx):
     charts = ctx.chart_paths or []
 
     if not charts:
-        st.info("لم يتم إنشاء رسوم بيانية — تحقق من Pipeline Status")
+        st.info(T("ui_no_charts"))
         return
 
     chart_labels = {
         "01_sales_trend":       "📈 " + T("sales_trend"),
-        "02_store_comparison":  "🏪 " + T("sales_by") + f" {ctx.group_col or 'Group'}",
+        "02_store_comparison":  "🏪 " + T("sales_by") + f" {ctx.group_col or T('ui_group_fallback')}",
         "03_monthly_trend":     "📅 " + T("monthly_sales"),
-        "04_holiday_impact":    "🎉 Holiday Impact",
+        "04_holiday_impact":    T("ui_holiday_impact"),
         "05_correlations":      "🔗 " + T("correlation"),
         "06_forecast":          "🔮 " + T("forecast_title"),
     }
@@ -425,14 +428,15 @@ def render_forecast_tab(ctx):
     fc = ctx.forecast_summary or {}
 
     if not fc:
-        st.info("التوقعات غير متاحة — تحقق من Pipeline Status")
+        st.info(T("ui_no_forecast"))
         return
 
     # ── KPI التوقعات ─────────────────────────────
     def money(v):
-        if v >= 1e6: return f"${v/1e6:.2f}M"
-        if v >= 1e3: return f"${v/1e3:.1f}K"
-        return f"${v:.0f}"
+        s = T("ui_currency_sym")
+        if v >= 1e6: return f"{s}{v/1e6:.2f}{T('ui_currency_suffix_m')}"
+        if v >= 1e3: return f"{s}{v/1e3:.1f}{T('ui_currency_suffix_k')}"
+        return f"{s}{v:.0f}"
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -445,7 +449,7 @@ def render_forecast_tab(ctx):
     st.divider()
 
     # ── Bear / Base / Bull ───────────────────────
-    st.markdown("#### 📊 Scenario Planning")
+    st.markdown(f"#### {T('ui_scenario_planning')}")
     b1, b2, b3 = st.columns(3)
     bear = fc.get('bear_12_weeks', 0)
     base = fc.get('next_12_weeks', 0)
@@ -455,29 +459,29 @@ def render_forecast_tab(ctx):
         st.markdown(
             f'<div class="kpi-card" style="border-left:3px solid #EF4444">'
             f'<p class="kpi-value" style="color:#EF4444">🐻 {money(bear)}</p>'
-            f'<p class="kpi-label">Bear Case</p>'
-            f'<p style="color:#8B92A5;font-size:11px">{fc.get("bear_spread_pct",0):+.1f}% from base</p>'
+            f'<p class="kpi-label">{T("ui_bear_case")}</p>'
+            f'<p style="color:#8B92A5;font-size:11px">{fc.get("bear_spread_pct",0):+.1f}% {T("ui_from_base")}</p>'
             f'</div>', unsafe_allow_html=True)
     with b2:
         st.markdown(
             f'<div class="kpi-card" style="border-left:3px solid #7C9EFF">'
             f'<p class="kpi-value" style="color:#7C9EFF">📌 {money(base)}</p>'
-            f'<p class="kpi-label">Base Case</p>'
-            f'<p style="color:#8B92A5;font-size:11px">Trend continuation</p>'
+            f'<p class="kpi-label">{T("ui_base_case")}</p>'
+            f'<p style="color:#8B92A5;font-size:11px">{T("ui_trend_continuation")}</p>'
             f'</div>', unsafe_allow_html=True)
     with b3:
         st.markdown(
             f'<div class="kpi-card" style="border-left:3px solid #4ADE80">'
             f'<p class="kpi-value" style="color:#4ADE80">🚀 {money(bull)}</p>'
-            f'<p class="kpi-label">Bull Case</p>'
-            f'<p style="color:#8B92A5;font-size:11px">+{fc.get("bull_spread_pct",0):.1f}% from base</p>'
+            f'<p class="kpi-label">{T("ui_bull_case")}</p>'
+            f'<p style="color:#8B92A5;font-size:11px">+{fc.get("bull_spread_pct",0):.1f}% {T("ui_from_base")}</p>'
             f'</div>', unsafe_allow_html=True)
 
     st.divider()
 
     # ── رسم التوقعات ─────────────────────────────
     if ctx.forecast_df is not None and ctx.prophet_data is not None:
-        st.markdown("#### 📈 Forecast Chart")
+        st.markdown(f"#### {T('ui_forecast_chart')}")
         forecast_df  = ctx.forecast_df
         historical   = ctx.prophet_data
         last_hist_dt = historical['ds'].max()
@@ -496,13 +500,15 @@ def render_forecast_tab(ctx):
             ax.plot(future['ds'], future['yhat'],
                     color='#4ADE80', linewidth=2.5, linestyle='--', label=T("forecast_label"))
             ax.plot(future['ds'], future['yhat_lower'],
-                    color='#EF4444', linewidth=1, linestyle=':', alpha=0.7, label='Bear')
+                    color='#EF4444', linewidth=1, linestyle=':', alpha=0.7, label=T("ui_legend_bear"))
             ax.plot(future['ds'], future['yhat_upper'],
-                    color='#FBBF24', linewidth=1, linestyle=':', alpha=0.7, label='Bull')
+                    color='#FBBF24', linewidth=1, linestyle=':', alpha=0.7, label=T("ui_legend_bull"))
 
         ax.axvline(x=last_hist_dt, color='#8B92A5', linewidth=0.8, linestyle='--', alpha=0.5)
+        _sym = T("ui_currency_sym")
+        _suf = T("ui_currency_suffix_m")
         ax.yaxis.set_major_formatter(
-            mticker.FuncFormatter(lambda x, _: f"${x/1e6:.1f}M" if x >= 1e6 else f"${x:,.0f}")
+            mticker.FuncFormatter(lambda x, _: f"{_sym}{x/1e6:.1f}{_suf}" if x >= 1e6 else f"{_sym}{x:,.0f}")
         )
         ax.tick_params(colors='#8B92A5')
         ax.spines['bottom'].set_color('#2D3250')
@@ -516,9 +522,9 @@ def render_forecast_tab(ctx):
         plt.close(fig)
 
     # ── Peak ─────────────────────────────────────
-    peak_wk  = fc.get('peak_week', 'N/A')
+    peak_wk  = fc.get('peak_week', T('ui_na'))
     peak_val = fc.get('peak_expected_sales', 0)
-    if peak_wk != 'N/A':
+    if peak_wk != T('ui_na'):
         st.info(f"{T('peak_info')} **{peak_wk}** → **{money(peak_val)}**")
 
     # ── Sanity Warning ───────────────────────────
@@ -531,12 +537,12 @@ def render_forecast_tab(ctx):
     indicators = fc.get('leading_indicators', [])
     if indicators:
         st.divider()
-        st.markdown("#### 🎯 Leading Indicators")
+        st.markdown(f"#### {T('ui_leading_indicators')}")
         for ind in indicators:
             with st.expander(f"📍 {ind.get('signal', '')}"):
-                st.markdown(f"**Target:** {ind.get('target', '')}")
-                st.markdown(f"**Alert:** {ind.get('alert', '')}")
-                st.markdown(f"**Action:** {ind.get('action', '')}")
+                st.markdown(f"**{T('ui_target')}** {ind.get('target', '')}")
+                st.markdown(f"**{T('ui_alert')}** {ind.get('alert', '')}")
+                st.markdown(f"**{T('ui_action')}** {ind.get('action', '')}")
 
 
 # ════════════════════════════════════════════════
@@ -605,11 +611,11 @@ def render_chat_tab(ctx):
         st.session_state.chat_history.append({"role": "assistant", "content": full_response})
 
     elif question and ctx is None:
-        st.warning("⚠️ يجب تحليل البيانات أولاً قبل استخدام المحادثة")
+        st.warning(T("ui_chat_before_analysis"))
 
     # ── مسح تاريخ المحادثة ───────────────────────
     if st.session_state.chat_history:
-        if st.button("🗑️ Clear Chat", use_container_width=True):
+        if st.button(T("ui_clear_chat"), use_container_width=True):
             st.session_state.chat_history = []
             st.rerun()
 
@@ -632,45 +638,48 @@ def render_overview_tab(ctx):
         st.markdown(f"#### {T('data_summary')}")
         summary_rows = [
             (T("total_records"),   f"{summary.get('total_records', 0):,}"),
-            ("Date Range",         summary.get('date_range', 'N/A')),
+            (T("ui_date_range"),   summary.get('date_range', T('ui_na'))),
             (T("total_sales"),     f"${summary.get('total_sales', 0):,.2f}"),
             (T("avg_period"),      f"${summary.get('avg_weekly_sales', 0):,.2f}"),
-            ("Peak Period",        f"${summary.get('max_single_week', 0):,.2f}"),
-            ("Best Group",         str(summary.get('best_group', 'N/A'))),
-            ("Worst Group",        str(summary.get('worst_group', 'N/A'))),
-            ("Num Groups",         str(summary.get('num_groups', 'N/A'))),
+            (T("ui_peak_period"),  f"${summary.get('max_single_week', 0):,.2f}"),
+            (T("ui_best_group"),   str(summary.get('best_group', T('ui_na')))),
+            (T("ui_worst_group"),  str(summary.get('worst_group', T('ui_na')))),
+            (T("ui_num_groups"),   str(summary.get('num_groups', T('ui_na')))),
         ]
-        df_summary = pd.DataFrame(summary_rows, columns=["Metric", "Value"])
+        df_summary = pd.DataFrame(summary_rows, columns=[T("ui_metric_col"), T("ui_value_col")])
         st.dataframe(df_summary, use_container_width=True, hide_index=True)
 
     # ── جودة البيانات ────────────────────────────
     with col_right:
-        st.markdown("#### 🧹 Data Quality")
+        st.markdown(f"#### {T('ui_data_quality')}")
         dq = ctx.data_quality_report or {}
         if dq:
             completeness = dq.get('completeness', 0)
-            rating       = dq.get('rating', 'Unknown')
+            rating       = dq.get('rating', T("ui_rating_unknown"))
+            rating_map   = {"Excellent": T("ui_rating_excellent"), "Good": T("ui_rating_good"),
+                            "Fair": T("ui_rating_fair"), "Poor": T("ui_rating_poor")}
+            rating_display = rating_map.get(rating, rating)
             color        = {"Excellent": "#4ADE80", "Good": "#60A5FA",
                             "Fair": "#FBBF24", "Poor": "#EF4444"}.get(rating, "#8B92A5")
 
             st.markdown(
                 f'<div class="kpi-card">'
                 f'<p class="kpi-value" style="color:{color}">{completeness:.0f}/100</p>'
-                f'<p class="kpi-label">Data Quality — {rating}</p>'
+                f'<p class="kpi-label">{T("ui_data_quality")} — {rating_display}</p>'
                 f'</div>',
                 unsafe_allow_html=True
             )
             st.markdown("")
             dq_rows = [
-                ("Total Records",  f"{dq.get('n_total', 0):,}"),
-                ("Missing Values", f"{dq.get('n_missing', 0)} ({dq.get('missing_pct', 0):.1f}%)"),
-                ("Duplicates",     f"{dq.get('n_duplicates', 0)}"),
-                ("Outliers (IQR)", f"{dq.get('n_outliers', 0)} ({dq.get('outlier_pct', 0):.1f}%)"),
+                (T("ui_dq_total_records"),  f"{dq.get('n_total', 0):,}"),
+                (T("ui_dq_missing_values"), f"{dq.get('n_missing', 0)} ({dq.get('missing_pct', 0):.1f}%)"),
+                (T("ui_dq_duplicates"),     f"{dq.get('n_duplicates', 0)}"),
+                (T("ui_dq_outliers"),       f"{dq.get('n_outliers', 0)} ({dq.get('outlier_pct', 0):.1f}%)"),
             ]
-            df_dq = pd.DataFrame(dq_rows, columns=["Check", "Result"])
+            df_dq = pd.DataFrame(dq_rows, columns=[T("ui_check_col"), T("ui_result_col")])
             st.dataframe(df_dq, use_container_width=True, hide_index=True)
         else:
-            st.info("تقرير جودة البيانات غير متاح")
+            st.info(T("ui_no_dq_report"))
 
     st.divider()
 
@@ -679,12 +688,12 @@ def render_overview_tab(ctx):
     if ctx.ai_analysis_text:
         st.markdown(ctx.ai_analysis_text)
     else:
-        st.info("لم يتم توليد تحليل ذكي — تحقق من Pipeline Status")
+        st.info(T("ui_no_ai_analysis"))
 
     st.divider()
 
     # ── تنزيل التقرير ────────────────────────────
-    st.markdown("#### 📄 Download Report")
+    st.markdown(f"#### {T('ui_download_report')}")
     col_pdf, col_txt = st.columns(2)
 
     with col_pdf:
@@ -716,22 +725,22 @@ def render_overview_tab(ctx):
 # ════════════════════════════════════════════════
 def render_landing():
     """صفحة البداية قبل رفع الملف"""
-    st.markdown("""
+    st.markdown(f"""
     <div style="text-align:center; padding: 60px 20px 40px;">
         <h1 style="font-size:48px; font-weight:800; color:#7C9EFF; margin-bottom:8px;">
-            📊 Sales Analysis Agent
+            {T('ui_landing_title')}
         </h1>
         <p style="font-size:18px; color:#8B92A5; max-width:600px; margin:0 auto 40px;">
-            Upload any sales data → Get instant AI-powered analysis, forecasts & reports
+            {T('ui_landing_subtitle')}
         </p>
     </div>
     """, unsafe_allow_html=True)
 
     c1, c2, c3 = st.columns(3)
     steps = [
-        (c1, "01", "Upload Data",    "CSV or Excel file — any column structure", "#7C9EFF"),
-        (c2, "02", "Map Columns",    "Tell us which column is Date and which is Sales", "#4ADE80"),
-        (c3, "03", "Get Results",    "AI analysis, charts, forecast & PDF report", "#FBBF24"),
+        (c1, "01", T("ui_step1_title"), T("ui_step1_desc"), "#7C9EFF"),
+        (c2, "02", T("ui_step2_title"), T("ui_step2_desc"), "#4ADE80"),
+        (c3, "03", T("ui_step3_title"), T("ui_step3_desc"), "#FBBF24"),
     ]
     for col, num, title, desc, color in steps:
         with col:
@@ -747,20 +756,20 @@ def render_landing():
     st.divider()
     c4, c5 = st.columns(2)
     with c4:
-        st.markdown("#### ✨ What this tool does")
-        st.markdown("""
-        - 📊 Smart data cleaning & validation
-        - 📈 Sales trend & pattern analysis
-        - 🏪 Group/store/branch comparison
-        - 🔗 External factor correlation
+        st.markdown(f"#### {T('ui_what_it_does_tool')}")
+        st.markdown(f"""
+        - {T('ui_feature_1')}
+        - {T('ui_feature_2')}
+        - {T('ui_feature_3')}
+        - {T('ui_feature_4')}
         """)
     with c5:
-        st.markdown("#### 🚀 Powered by")
-        st.markdown("""
-        - 🤖 Claude AI (Anti-Hallucination Protocol)
-        - 📊 Holt-Winters Forecasting
-        - 📄 Professional PDF Reports
-        - 💬 Interactive AI Chat
+        st.markdown(f"#### {T('ui_powered_by_section')}")
+        st.markdown(f"""
+        - {T('ui_powered_1')}
+        - {T('ui_powered_2')}
+        - {T('ui_powered_3')}
+        - {T('ui_powered_4')}
         """)
 
 
@@ -768,6 +777,17 @@ def render_landing():
 # MAIN APP
 # ════════════════════════════════════════════════
 def main():
+    # ── RTL direction for Arabic ──────────────────
+    if st.session_state.lang == "ar":
+        st.markdown(
+            '<style>'
+            '.stApp { direction: rtl; }'
+            '.st-emotion-cache-1aehpvj, .stSelectbox label, .stSlider label { text-align: right; }'
+            '.st-d7, .st-d8 { direction: rtl; }'
+            '</style>',
+            unsafe_allow_html=True
+        )
+
     # ── Header ───────────────────────────────────
     st.markdown(
         f'<h2 style="color:#7C9EFF;margin-bottom:0">{T("app_title")}</h2>'
